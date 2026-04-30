@@ -64,3 +64,24 @@ export interface FilterOptions {
   session_ids: string[];
   hook_event_types: string[];
 }
+
+// Custom human-friendly name for a session_id within a source_app.
+// Stored server-side so renames persist across reloads.
+//
+// Primary key is the (session_id, source_app) pair — the same short hash
+// could theoretically collide across machines/projects, so we scope the
+// name to the source_app it was seen on.
+export interface SessionName {
+  session_id: string;
+  source_app: string;
+  custom_name: string;
+  updated_at: number;
+}
+
+// Body shape for POST /api/session-names. An empty / whitespace-only
+// custom_name deletes the row instead of upserting.
+export interface SessionNameUpsertRequest {
+  session_id: string;
+  source_app: string;
+  custom_name: string;
+}

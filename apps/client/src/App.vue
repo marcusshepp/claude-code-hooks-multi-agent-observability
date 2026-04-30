@@ -1,6 +1,6 @@
 <template>
   <div class="h-screen flex flex-col bg-[var(--background)] text-[var(--text-primary)]">
-    <!-- Sticky 24px header: status dot, events count, clear, filters -->
+    <!-- Sticky 24px header: status dot, events count, view toggle, clear, filters -->
     <header
       class="sticky top-0 z-30 flex h-6 items-center gap-2 px-3 border-b border-[var(--border)] bg-[var(--background)]"
     >
@@ -20,6 +20,46 @@
       <span class="font-mono text-xs text-[var(--text-secondary)]">
         {{ events.length }}
       </span>
+
+      <!-- View toggle (segmented) — Stream | Sessions -->
+      <div
+        class="ml-2 inline-flex h-5 items-center rounded-md border border-[var(--border)] bg-[var(--surface-inset)] p-px"
+        role="tablist"
+        aria-label="Dashboard view"
+      >
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="view === 'stream'"
+          :class="[
+            'inline-flex h-4 items-center gap-1 rounded-sm px-1.5 text-[11px] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]',
+            view === 'stream'
+              ? 'bg-[var(--surface)] text-[var(--text-primary)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          ]"
+          title="Stream view"
+          @click="setView('stream')"
+        >
+          <List :size="11" :stroke-width="1.5" aria-hidden="true" />
+          Stream
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="view === 'sessions'"
+          :class="[
+            'inline-flex h-4 items-center gap-1 rounded-sm px-1.5 text-[11px] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]',
+            view === 'sessions'
+              ? 'bg-[var(--surface)] text-[var(--text-primary)]'
+              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          ]"
+          title="Sessions grid"
+          @click="setView('sessions')"
+        >
+          <LayoutGrid :size="11" :stroke-width="1.5" aria-hidden="true" />
+          Sessions
+        </button>
+      </div>
 
       <div class="flex-1"></div>
 
@@ -70,8 +110,9 @@
       </div>
     </header>
 
-    <!-- Live Pulse Chart -->
+    <!-- Live Pulse Chart (Stream view only — keeps Sessions grid uncluttered) -->
     <LivePulseChart
+      v-if="view === 'stream'"
       :events="events"
       :filters="filters"
       @update-unique-apps="uniqueAppNames = $event"
@@ -79,9 +120,9 @@
       @update-time-range="currentTimeRange = $event"
     />
 
-    <!-- Agent Swim Lane Container (below pulse chart, full width, hidden when empty) -->
+    <!-- Agent Swim Lane Container (Stream view only) -->
     <div
-      v-if="selectedAgentLanes.length > 0"
+      v-if="view === 'stream' && selectedAgentLanes.length > 0"
       class="w-full bg-[var(--background)] px-3 py-2 overflow-hidden"
     >
       <AgentSwimLaneContainer
@@ -92,8 +133,8 @@
       />
     </div>
 
-    <!-- Timeline -->
-    <div class="flex flex-col flex-1 overflow-hidden">
+    <!-- Timeline (Stream view) -->
+    <div v-if="view === 'stream'" class="flex flex-col flex-1 overflow-hidden">
       <EventTimeline
         :events="events"
         :filters="filters"
@@ -101,8 +142,18 @@
       />
     </div>
 
-    <!-- Stick to bottom button -->
+    <!-- Sessions grid -->
+    <SessionsGrid
+      v-else
+      :events="events"
+      :get-name="getName"
+      @rename-session="onRenameSession"
+      @filter-to-session="onFilterToSession"
+    />
+
+    <!-- Stick to bottom button (Stream view only) -->
     <StickScrollButton
+      v-if="view === 'stream'"
       :stick-to-bottom="stickToBottom"
       @toggle="stickToBottom = !stickToBottom"
     />
@@ -129,17 +180,46 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue';
-import { Circle, Trash2, SlidersHorizontal } from 'lucide-vue-next';
-import type { TimeRange } from './types';
+import { Circle, LayoutGrid, List, Trash2, SlidersHorizontal } from 'lucide-vue-next';
+import type { DashboardView, TimeRange } from './types';
 import { useWebSocket } from './composables/useWebSocket';
 import { useEventColors } from './composables/useEventColors';
+import { useSessionNames } from './composables/useSessionNames';
 import EventTimeline from './components/EventTimeline.vue';
 import FilterPanel from './components/FilterPanel.vue';
 import StickScrollButton from './components/StickScrollButton.vue';
 import LivePulseChart from './components/LivePulseChart.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import AgentSwimLaneContainer from './components/AgentSwimLaneContainer.vue';
+import SessionsGrid from './components/SessionsGrid.vue';
 import { WS_URL } from './config';
+
+// ---------------------------------------------------------------------------
+// View state — Stream vs Sessions, persisted to localStorage so reload sticks.
+// ---------------------------------------------------------------------------
+
+const VIEW_STORAGE_KEY = 'observability:view';
+
+const loadInitialView = (): DashboardView => {
+  try {
+    const raw = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (raw === 'sessions' || raw === 'stream') return raw;
+  } catch {
+    // localStorage unavailable (private mode etc.) — fall through to default.
+  }
+  return 'stream';
+};
+
+const view = ref<DashboardView>(loadInitialView());
+
+const setView = (next: DashboardView) => {
+  view.value = next;
+  try {
+    localStorage.setItem(VIEW_STORAGE_KEY, next);
+  } catch {
+    // Best-effort persistence; ignore quota / availability errors.
+  }
+};
 
 // WebSocket connection
 const { events, isConnected, error, clearEvents } = useWebSocket(WS_URL);
@@ -213,6 +293,29 @@ const toggleAgentLane = (agentName: string) => {
 const handleClearClick = () => {
   clearEvents();
   selectedAgentLanes.value = [];
+};
+
+// Session names (Sessions view rename support).
+const { getName, renameSession } = useSessionNames();
+
+const onRenameSession = (payload: { session_id: string; source_app: string; custom_name: string }) => {
+  // Composable already updates optimistically + rolls back on error.
+  // We swallow rejection here because errors are surfaced via the
+  // composable's `error` ref + console; nothing actionable for the user
+  // at the App.vue level.
+  renameSession(payload.session_id, payload.source_app, payload.custom_name).catch(() => {
+    /* handled in useSessionNames */
+  });
+};
+
+// Drill-down: clicking a card's filter button switches to Stream view with
+// the session_id filter pre-applied.
+const onFilterToSession = (session_id: string) => {
+  filters.value = {
+    ...filters.value,
+    sessionId: session_id,
+  };
+  setView('stream');
 };
 
 // Filters popover: close on outside click + Escape. Without this, a stray

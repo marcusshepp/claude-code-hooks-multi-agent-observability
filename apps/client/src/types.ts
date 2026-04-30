@@ -58,6 +58,19 @@ export interface FilterOptions {
   hook_event_types: string[];
 }
 
+// Custom human-friendly name for a (session_id, source_app) pair.
+// Persisted server-side via /api/session-names.
+export interface SessionName {
+  session_id: string;
+  source_app: string;
+  custom_name: string;
+  updated_at: number;
+}
+
+// Top-level UI view. The Stream is the chronological event timeline; the
+// Sessions grid groups events by session_id and renders one card per session.
+export type DashboardView = 'stream' | 'sessions';
+
 export interface WebSocketMessage {
   type: 'initial' | 'event' | 'hitl_response';
   data: HookEvent | HookEvent[] | HumanInTheLoopResponse;

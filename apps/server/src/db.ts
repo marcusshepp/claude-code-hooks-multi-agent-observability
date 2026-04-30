@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import type { HookEvent, FilterOptions } from './types';
+import type { HookEvent, FilterOptions, SessionName } from './types';
 
 let db: Database;
 
@@ -92,6 +92,21 @@ export function initDatabase(): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_hook_event_type ON events(hook_event_type)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_timestamp ON events(timestamp)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_agent_id ON events(agent_id)');
+
+  // Session names — human-friendly aliases for raw session_id hashes.
+  // Composite primary key on (session_id, source_app) because the same
+  // short hash could collide across machines / projects; we always look
+  // up by both. Idempotent CREATE TABLE — same migration pattern as the
+  // events table above.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_names (
+      session_id TEXT NOT NULL,
+      source_app TEXT NOT NULL,
+      custom_name TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, source_app)
+    )
+  `);
 
   // Note: previous versions of this app maintained `themes`, `theme_shares`,
   // and `theme_ratings` tables. The dashboard is now hardcoded to a single
@@ -227,6 +242,53 @@ export function updateEventHITLResponse(id: number, response: any): HookEvent | 
     parent_session_id: row.parent_session_id || undefined,
     agent_id: row.agent_id || undefined
   };
+}
+
+// ---------------------------------------------------------------------------
+// Session names
+// ---------------------------------------------------------------------------
+
+export function getAllSessionNames(): SessionName[] {
+  const stmt = db.prepare(`
+    SELECT session_id, source_app, custom_name, updated_at
+    FROM session_names
+    ORDER BY updated_at DESC
+  `);
+  const rows = stmt.all() as any[];
+  return rows.map(row => ({
+    session_id: row.session_id,
+    source_app: row.source_app,
+    custom_name: row.custom_name,
+    updated_at: row.updated_at,
+  }));
+}
+
+// Upsert a session's friendly name. Returns the saved row.
+export function upsertSessionName(
+  session_id: string,
+  source_app: string,
+  custom_name: string
+): SessionName {
+  const updated_at = Date.now();
+  const stmt = db.prepare(`
+    INSERT INTO session_names (session_id, source_app, custom_name, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(session_id, source_app) DO UPDATE SET
+      custom_name = excluded.custom_name,
+      updated_at = excluded.updated_at
+  `);
+  stmt.run(session_id, source_app, custom_name, updated_at);
+  return { session_id, source_app, custom_name, updated_at };
+}
+
+// Delete a session's friendly name. Returns true if a row was removed.
+export function deleteSessionName(session_id: string, source_app: string): boolean {
+  const stmt = db.prepare(`
+    DELETE FROM session_names
+    WHERE session_id = ? AND source_app = ?
+  `);
+  const result = stmt.run(session_id, source_app);
+  return (result.changes ?? 0) > 0;
 }
 
 export { db };

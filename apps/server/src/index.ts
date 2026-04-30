@@ -1,5 +1,18 @@
-import { initDatabase, insertEvent, getFilterOptions, getRecentEvents, updateEventHITLResponse } from './db';
-import type { HookEvent, HumanInTheLoopResponse } from './types';
+import {
+  initDatabase,
+  insertEvent,
+  getFilterOptions,
+  getRecentEvents,
+  updateEventHITLResponse,
+  getAllSessionNames,
+  upsertSessionName,
+  deleteSessionName,
+} from './db';
+import type {
+  HookEvent,
+  HumanInTheLoopResponse,
+  SessionNameUpsertRequest,
+} from './types';
 
 // Initialize database
 initDatabase();
@@ -371,6 +384,69 @@ const server = Bun.serve({
         });
       } catch (error) {
         console.error('Error processing HITL response:', error);
+        return new Response(JSON.stringify({ error: 'Invalid request' }), {
+          status: 400,
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // GET /api/session-names - List all custom session names
+    if (url.pathname === '/api/session-names' && req.method === 'GET') {
+      const names = getAllSessionNames();
+      return new Response(JSON.stringify(names), {
+        headers: { ...headers, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // POST /api/session-names - Upsert a custom session name.
+    // An empty / whitespace-only custom_name deletes the existing row.
+    if (url.pathname === '/api/session-names' && req.method === 'POST') {
+      try {
+        const body = (await req.json()) as Partial<SessionNameUpsertRequest>;
+
+        if (
+          typeof body.session_id !== 'string' ||
+          !body.session_id ||
+          typeof body.source_app !== 'string' ||
+          !body.source_app ||
+          typeof body.custom_name !== 'string'
+        ) {
+          return new Response(
+            JSON.stringify({ error: 'Missing or invalid fields: session_id, source_app, custom_name' }),
+            {
+              status: 400,
+              headers: { ...headers, 'Content-Type': 'application/json' }
+            }
+          );
+        }
+
+        const trimmed = body.custom_name.trim();
+
+        if (trimmed.length === 0) {
+          // Empty name — clear any existing alias for this session.
+          const removed = deleteSessionName(body.session_id, body.source_app);
+          return new Response(
+            JSON.stringify({
+              session_id: body.session_id,
+              source_app: body.source_app,
+              custom_name: '',
+              deleted: removed,
+            }),
+            { headers: { ...headers, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        // Cap length to keep card headers readable. 80 chars is generous —
+        // anything longer would blow out the card layout anyway.
+        const safeName = trimmed.slice(0, 80);
+        const saved = upsertSessionName(body.session_id, body.source_app, safeName);
+
+        return new Response(JSON.stringify(saved), {
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
+      } catch (error) {
+        console.error('Error upserting session name:', error);
         return new Response(JSON.stringify({ error: 'Invalid request' }), {
           status: 400,
           headers: { ...headers, 'Content-Type': 'application/json' }
