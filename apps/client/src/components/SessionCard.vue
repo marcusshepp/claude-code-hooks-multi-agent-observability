@@ -3,7 +3,7 @@
     class="flex flex-col rounded-lg border border-[var(--border)] bg-[var(--surface)] overflow-hidden"
     :style="{ height: cardHeight + 'px' }"
   >
-    <!-- Header row (32px, sticky in card scroll context) -->
+    <!-- Header row (32px, sticky top of card) -->
     <div
       class="flex items-center gap-2 px-3 h-8 shrink-0 border-b border-[var(--border)] bg-[var(--surface-inset)]"
     >
@@ -68,6 +68,16 @@
         </template>
       </div>
 
+      <!-- Total tool count across all agents (parent + subagents) -->
+      <span
+        v-if="session.toolCount > 0"
+        class="inline-flex items-center gap-1 font-mono text-[11px] text-[var(--text-secondary)] shrink-0 tabular-nums"
+        :title="`${session.toolCount} total tool ${session.toolCount === 1 ? 'call' : 'calls'} across all agents`"
+      >
+        <Wrench class="w-3 h-3" :stroke-width="1.5" aria-hidden="true" />
+        {{ session.toolCount }}
+      </span>
+
       <!-- Subagent count pill (only when > 0) -->
       <span
         v-if="session.subagentCount > 0"
@@ -106,49 +116,31 @@
       </span>
       <span class="text-[var(--text-tertiary)] shrink-0">·</span>
       <span class="font-mono shrink-0 tabular-nums">
-        {{ session.toolCount }} {{ session.toolCount === 1 ? 'tool' : 'tools' }}
+        {{ agentGroups.length }} {{ agentGroups.length === 1 ? 'agent' : 'agents' }}
       </span>
     </div>
 
-    <!-- Mini event log -->
+    <!-- Agent panels area (flex-grow, scrollable) -->
     <div
-      ref="logRef"
-      class="flex-1 min-h-0 overflow-y-auto px-2 py-1 flex flex-col gap-px"
-      @scroll="handleScroll"
+      class="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-2"
     >
-      <div
-        v-for="event in displayedEvents"
-        :key="`${event.id}-${event.timestamp}`"
-        class="flex items-center gap-1.5 px-1.5 rounded-sm min-h-[24px] hover:bg-[var(--surface-inset)] transition-colors duration-150"
-      >
-        <component
-          :is="iconForEvent(event)"
-          class="w-3 h-3 shrink-0"
-          :class="iconColorClass(event)"
-          :stroke-width="1.5"
-          aria-hidden="true"
-        />
-        <span class="font-mono text-[10px] text-[var(--text-tertiary)] shrink-0 tabular-nums">
-          {{ formatTime(event.timestamp) }}
-        </span>
-        <span
-          v-if="primaryLabel(event)"
-          class="text-[12px] text-[var(--text-primary)] shrink-0"
-        >
-          {{ primaryLabel(event) }}
-        </span>
-        <span
-          v-if="commandTextFor(event)"
-          class="font-mono text-[11px] text-[var(--text-secondary)] flex-1 min-w-0 truncate"
-          :title="commandTextFor(event)"
-        >
-          {{ commandTextFor(event) }}
-        </span>
-        <span v-else class="flex-1"></span>
-      </div>
+      <AgentPanel
+        v-for="group in agentGroups"
+        :key="group.key"
+        :agent-id="group.key"
+        :is-parent="group.isParent"
+        :session-id="session.session_id"
+        :subagent-type="group.subagentType"
+        :description="group.description"
+        :tool-count="group.toolCount"
+        :recent-tools="group.recentTools"
+        :last-activity="group.lastActivity"
+        :now="now"
+        @drill-down="onPanelDrillDown"
+      />
 
       <div
-        v-if="displayedEvents.length === 0"
+        v-if="agentGroups.length === 0"
         class="flex-1 flex items-center justify-center"
       >
         <span class="text-[11px] text-[var(--text-tertiary)]">No events yet</span>
@@ -173,11 +165,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
-import type { Component } from 'vue';
-import { Filter, Pencil, Users } from 'lucide-vue-next';
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
+import { Filter, Pencil, Users, Wrench } from 'lucide-vue-next';
 import type { HookEvent } from '../types';
-import { getEventIcon, getToolIcon } from '../composables/useEventIcons';
+import AgentPanel from './AgentPanel.vue';
 
 // One row in the SessionsGrid — derived from raw events by SessionsGrid.vue.
 export interface SessionSummary {
@@ -203,7 +194,9 @@ const emit = defineEmits<{
   (e: 'filter-to-session', session_id: string): void;
 }>();
 
-const cardHeight = computed(() => props.cardHeight ?? 360);
+// Card height is bounded so the grid stays browsable even with many subagents.
+// Inside the card, the panels area is the scroll region.
+const cardHeight = computed(() => props.cardHeight ?? 480);
 
 // ---------------------------------------------------------------------------
 // Rename inline editor
@@ -248,50 +241,7 @@ const cancelEdit = () => {
 };
 
 // ---------------------------------------------------------------------------
-// Mini event log — show last 30 events of THIS session, auto-scroll to bottom
-// ---------------------------------------------------------------------------
-
-const MAX_DISPLAYED = 30;
-
-const displayedEvents = computed<HookEvent[]>(() => {
-  const all = props.session.events;
-  if (all.length <= MAX_DISPLAYED) return all;
-  return all.slice(all.length - MAX_DISPLAYED);
-});
-
-const logRef = ref<HTMLDivElement | null>(null);
-const stickToBottom = ref(true);
-
-const handleScroll = () => {
-  const el = logRef.value;
-  if (!el) return;
-  const { scrollTop, scrollHeight, clientHeight } = el;
-  // Within 24px of the bottom counts as "at the bottom".
-  stickToBottom.value = scrollHeight - scrollTop - clientHeight < 24;
-};
-
-const scrollLogToBottom = () => {
-  const el = logRef.value;
-  if (!el) return;
-  el.scrollTop = el.scrollHeight;
-};
-
-watch(
-  () => props.session.events.length,
-  async () => {
-    if (!stickToBottom.value) return;
-    await nextTick();
-    scrollLogToBottom();
-  }
-);
-
-onMounted(async () => {
-  await nextTick();
-  scrollLogToBottom();
-});
-
-// ---------------------------------------------------------------------------
-// Live "Xs ago" ticker
+// Live "Xs ago" ticker — also drives per-agent status dots in AgentPanel.
 // ---------------------------------------------------------------------------
 
 const now = ref(Date.now());
@@ -323,6 +273,125 @@ const relativeTime = computed(() => {
 });
 
 // ---------------------------------------------------------------------------
+// Agent grouping — split the session's flat event log into one bucket per
+// agent (parent = events with no agent_id; one bucket per distinct agent_id).
+// ---------------------------------------------------------------------------
+
+const PARENT_KEY = 'parent';
+const RECENT_TOOLS_PER_AGENT = 8;
+
+const TOOL_EVENT_TYPES = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
+]);
+
+interface AgentGroup {
+  key: string; // 'parent' or agent_id
+  isParent: boolean;
+  events: HookEvent[];
+  subagentType?: string;
+  description?: string;
+  toolCount: number;
+  recentTools: HookEvent[];
+  lastActivity: number;
+}
+
+const agentGroups = computed<AgentGroup[]>(() => {
+  // Bucket: insertion order is preserved, which matters for "first appeared"
+  // tie-breaks below.
+  const buckets = new Map<string, HookEvent[]>();
+
+  for (const event of props.session.events) {
+    const key = event.agent_id ?? PARENT_KEY;
+    let list = buckets.get(key);
+    if (!list) {
+      list = [];
+      buckets.set(key, list);
+    }
+    list.push(event);
+  }
+
+  const groups: AgentGroup[] = [];
+
+  for (const [key, events] of buckets.entries()) {
+    const isParent = key === PARENT_KEY;
+
+    // Latest non-empty subagent_type / description. The server back-fills these
+    // onto every subagent-issued event so any of them is fine; we sweep
+    // backwards to grab the freshest value in case the spawn carried a
+    // different label than later updates.
+    let subagentType: string | undefined;
+    let description: string | undefined;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (!subagentType && ev.subagent_type) subagentType = ev.subagent_type;
+      if (!description && ev.description) description = ev.description;
+      if (subagentType && description) break;
+    }
+
+    // toolCount: count PreToolUse calls EXCEPT `tool_name === 'Agent'`, which
+    // is the parent's "spawn a subagent" call — that's already represented
+    // by the dedicated subagent panel; double-counting it inflates the parent.
+    let toolCount = 0;
+    for (const ev of events) {
+      if (ev.hook_event_type !== 'PreToolUse') continue;
+      const name = ev.payload?.tool_name;
+      if (name === 'Agent') continue;
+      toolCount += 1;
+    }
+
+    // Recent tools: last N tool-related events. We include PreToolUse,
+    // PostToolUse, PostToolUseFailure, PermissionRequest — but again skip
+    // the parent's Agent-spawn calls so the parent's tool list isn't
+    // dominated by spawn rows.
+    const toolish: HookEvent[] = [];
+    for (const ev of events) {
+      if (!TOOL_EVENT_TYPES.has(ev.hook_event_type)) continue;
+      const name = ev.payload?.tool_name;
+      if (name === 'Agent') continue;
+      toolish.push(ev);
+    }
+    const recentTools = toolish.slice(-RECENT_TOOLS_PER_AGENT);
+
+    let lastActivity = 0;
+    for (const ev of events) {
+      const ts = ev.timestamp ?? 0;
+      if (ts > lastActivity) lastActivity = ts;
+    }
+
+    groups.push({
+      key,
+      isParent,
+      events,
+      subagentType,
+      description,
+      toolCount,
+      recentTools,
+      lastActivity,
+    });
+  }
+
+  // Parent first, then subagents sorted by most-recent activity.
+  groups.sort((a, b) => {
+    if (a.isParent && !b.isParent) return -1;
+    if (!a.isParent && b.isParent) return 1;
+    return b.lastActivity - a.lastActivity;
+  });
+
+  return groups;
+});
+
+const onPanelDrillDown = (_agentId: string) => {
+  // TODO agent-id filter — Stream view doesn't support agent_id scoping yet,
+  // so for now any panel-header click drills to the full session. When agent
+  // filtering lands, route the agent_id through here so subagent panels can
+  // narrow further than the session.
+  emit('filter-to-session', props.session.session_id);
+};
+
+// ---------------------------------------------------------------------------
 // Display helpers
 // ---------------------------------------------------------------------------
 
@@ -332,69 +401,6 @@ const subagentPillStyle = computed(() => ({
   backgroundColor: 'rgba(0, 174, 239, 0.15)',
   border: '1px solid rgba(0, 174, 239, 0.5)',
 }));
-
-const TOOL_EVENT_TYPES = new Set([
-  'PreToolUse',
-  'PostToolUse',
-  'PostToolUseFailure',
-  'PermissionRequest',
-]);
-
-const toolNameOf = (event: HookEvent): string | null => {
-  if (!TOOL_EVENT_TYPES.has(event.hook_event_type)) return null;
-  const name = event.payload?.tool_name;
-  return typeof name === 'string' ? name : null;
-};
-
-const iconForEvent = (event: HookEvent): Component => {
-  const tool = toolNameOf(event);
-  if (tool) return getToolIcon(tool);
-  return getEventIcon(event.hook_event_type);
-};
-
-const iconColorClass = (event: HookEvent): string => {
-  if (event.hook_event_type === 'PostToolUseFailure') return 'text-[var(--danger)]';
-  if (event.hook_event_type === 'PostToolUse') return 'text-[var(--success)]';
-  if (event.hook_event_type === 'PermissionRequest') return 'text-[var(--warning)]';
-  if (event.hook_event_type === 'SubagentStart' || event.hook_event_type === 'SubagentStop') {
-    return 'text-[var(--accent)]';
-  }
-  return 'text-[var(--text-secondary)]';
-};
-
-const primaryLabel = (event: HookEvent): string => {
-  const tool = toolNameOf(event);
-  if (tool) return tool;
-  return event.hook_event_type;
-};
-
-const commandTextFor = (event: HookEvent): string => {
-  const payload = event.payload ?? {};
-  const input = payload.tool_input ?? {};
-  if (typeof input.command === 'string' && input.command) return input.command;
-  if (typeof input.file_path === 'string' && input.file_path) return input.file_path;
-  if (typeof input.notebook_path === 'string' && input.notebook_path) return input.notebook_path;
-  if (typeof input.pattern === 'string' && input.pattern) return input.pattern;
-  if (typeof input.query === 'string' && input.query) return input.query;
-  if (typeof input.url === 'string' && input.url) return input.url;
-  if (typeof input.prompt === 'string' && input.prompt) return input.prompt;
-  if (event.hook_event_type === 'UserPromptSubmit' && typeof payload.prompt === 'string') {
-    return payload.prompt;
-  }
-  if (event.summary) return event.summary;
-  return '';
-};
-
-const formatTime = (timestamp?: number): string => {
-  if (!timestamp) return '';
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString([], {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-};
 
 const formatModelName = (name: string | null | undefined): string => {
   if (!name) return '';
