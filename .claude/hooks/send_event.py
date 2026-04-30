@@ -111,13 +111,54 @@ def main():
     if 'permission_suggestions' in input_data:
         event_data['permission_suggestions'] = input_data['permission_suggestions']
 
-    # agent_id: SubagentStart, SubagentStop
+    # agent_id: present at top-level on SubagentStart, SubagentStop, and
+    # on every PreToolUse / PostToolUse fired from inside a subagent (the
+    # parent's tool calls have no agent_id). This is the durable key for
+    # routing every subagent-issued event to the right swim lane / badge.
     if 'agent_id' in input_data:
         event_data['agent_id'] = input_data['agent_id']
 
-    # agent_type: SessionStart, SubagentStart, SubagentStop
+    # agent_type: top-level on SessionStart, SubagentStart, SubagentStop,
+    # and on every event fired from inside a subagent. Claude Code uses
+    # `agent_type` as the canonical name (e.g. "general-purpose", "Explore")
+    # — the same value the parent passed as `subagent_type` to the Task /
+    # Agent tool. We normalize it under both names so downstream consumers
+    # can rely on `subagent_type` everywhere.
     if 'agent_type' in input_data:
         event_data['agent_type'] = input_data['agent_type']
+        if not event_data.get('subagent_type'):
+            event_data['subagent_type'] = input_data['agent_type']
+
+    # Subagent attribution from the parent's Task / Agent tool call. The
+    # PreToolUse hook for tool_name == "Agent" carries
+    #   tool_input = { description, subagent_type, prompt }
+    # — that's the *only* place Claude Code emits the human-readable
+    # description. Lift it to the top level so the parent's spawn event
+    # itself shows the badge, and so the server can attach the same
+    # description to the corresponding SubagentStart and to every tool
+    # call that fires from inside the subagent.
+    tool_name = input_data.get('tool_name')
+    tool_input = input_data.get('tool_input') or {}
+    if isinstance(tool_input, dict) and tool_name == 'Agent':
+        if isinstance(tool_input.get('subagent_type'), str) and not event_data.get('subagent_type'):
+            event_data['subagent_type'] = tool_input['subagent_type']
+        if isinstance(tool_input.get('description'), str) and not event_data.get('description'):
+            event_data['description'] = tool_input['description']
+
+    # Forward-compat: if Claude Code or an upstream patch ever emits
+    # `subagent_type` / `description` at the top level, honor that too —
+    # don't overwrite anything we already extracted from tool_input.
+    if 'subagent_type' in input_data and not event_data.get('subagent_type'):
+        event_data['subagent_type'] = input_data['subagent_type']
+    if 'description' in input_data and not event_data.get('description'):
+        event_data['description'] = input_data['description']
+
+    # parent_session_id: forward-compat field. Real Claude Code subagents
+    # share the parent's session_id (differentiated by agent_id), so this
+    # column will normally be NULL — present only if a future Claude Code
+    # version, or a custom upstream hook, starts emitting it explicitly.
+    if 'parent_session_id' in input_data:
+        event_data['parent_session_id'] = input_data['parent_session_id']
 
     # agent_transcript_path: SubagentStop
     if 'agent_transcript_path' in input_data:

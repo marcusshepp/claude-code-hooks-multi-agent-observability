@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import type { HookEvent, FilterOptions, Theme, ThemeSearchQuery } from './types';
+import type { HookEvent, FilterOptions } from './types';
 
 let db: Database;
 
@@ -55,6 +55,33 @@ export function initDatabase(): void {
     if (!hasModelNameColumn) {
       db.exec('ALTER TABLE events ADD COLUMN model_name TEXT');
     }
+
+    // Subagent attribution columns. Default NULL — backwards compatible
+    // with any event row that pre-dates this migration or any hook that
+    // doesn't yet forward these fields.
+    const hasSubagentTypeColumn = columns.some((col: any) => col.name === 'subagent_type');
+    if (!hasSubagentTypeColumn) {
+      db.exec('ALTER TABLE events ADD COLUMN subagent_type TEXT');
+    }
+
+    const hasDescriptionColumn = columns.some((col: any) => col.name === 'description');
+    if (!hasDescriptionColumn) {
+      db.exec('ALTER TABLE events ADD COLUMN description TEXT');
+    }
+
+    const hasParentSessionIdColumn = columns.some((col: any) => col.name === 'parent_session_id');
+    if (!hasParentSessionIdColumn) {
+      db.exec('ALTER TABLE events ADD COLUMN parent_session_id TEXT');
+    }
+
+    // agent_id — Claude Code's per-subagent identifier, present at the
+    // top level on SubagentStart/Stop and on every tool event fired from
+    // inside a subagent. Together with session_id this is the durable
+    // (parent_session, child_agent) pair that anchors attribution.
+    const hasAgentIdColumn = columns.some((col: any) => col.name === 'agent_id');
+    if (!hasAgentIdColumn) {
+      db.exec('ALTER TABLE events ADD COLUMN agent_id TEXT');
+    }
   } catch (error) {
     // If the table doesn't exist yet, the CREATE TABLE above will handle it
   }
@@ -64,68 +91,25 @@ export function initDatabase(): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_session_id ON events(session_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_hook_event_type ON events(hook_event_type)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_timestamp ON events(timestamp)');
-  
-  // Create themes table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS themes (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      displayName TEXT NOT NULL,
-      description TEXT,
-      colors TEXT NOT NULL,
-      isPublic INTEGER NOT NULL DEFAULT 0,
-      authorId TEXT,
-      authorName TEXT,
-      createdAt INTEGER NOT NULL,
-      updatedAt INTEGER NOT NULL,
-      tags TEXT,
-      downloadCount INTEGER DEFAULT 0,
-      rating REAL DEFAULT 0,
-      ratingCount INTEGER DEFAULT 0
-    )
-  `);
-  
-  // Create theme shares table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS theme_shares (
-      id TEXT PRIMARY KEY,
-      themeId TEXT NOT NULL,
-      shareToken TEXT NOT NULL UNIQUE,
-      expiresAt INTEGER,
-      isPublic INTEGER NOT NULL DEFAULT 0,
-      allowedUsers TEXT,
-      createdAt INTEGER NOT NULL,
-      accessCount INTEGER DEFAULT 0,
-      FOREIGN KEY (themeId) REFERENCES themes (id) ON DELETE CASCADE
-    )
-  `);
-  
-  // Create theme ratings table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS theme_ratings (
-      id TEXT PRIMARY KEY,
-      themeId TEXT NOT NULL,
-      userId TEXT NOT NULL,
-      rating INTEGER NOT NULL,
-      comment TEXT,
-      createdAt INTEGER NOT NULL,
-      UNIQUE(themeId, userId),
-      FOREIGN KEY (themeId) REFERENCES themes (id) ON DELETE CASCADE
-    )
-  `);
-  
-  // Create indexes for theme tables
-  db.exec('CREATE INDEX IF NOT EXISTS idx_themes_name ON themes(name)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_themes_isPublic ON themes(isPublic)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_themes_createdAt ON themes(createdAt)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_theme_shares_token ON theme_shares(shareToken)');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_theme_ratings_theme ON theme_ratings(themeId)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agent_id ON events(agent_id)');
+
+  // Note: previous versions of this app maintained `themes`, `theme_shares`,
+  // and `theme_ratings` tables. The dashboard is now hardcoded to a single
+  // dark theme — those tables are obsolete and the CRUD endpoints have been
+  // removed. We intentionally do NOT drop the legacy tables here so existing
+  // events.db files can be opened without rewriting their on-disk schema; the
+  // tables sit unused. To reclaim the space run `VACUUM` after `DROP TABLE`
+  // manually if a fresh deploy.
 }
 
 export function insertEvent(event: HookEvent): HookEvent {
   const stmt = db.prepare(`
-    INSERT INTO events (source_app, session_id, hook_event_type, payload, chat, summary, timestamp, humanInTheLoop, humanInTheLoopStatus, model_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO events (
+      source_app, session_id, hook_event_type, payload, chat, summary,
+      timestamp, humanInTheLoop, humanInTheLoopStatus, model_name,
+      subagent_type, description, parent_session_id, agent_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const timestamp = event.timestamp || Date.now();
@@ -146,7 +130,11 @@ export function insertEvent(event: HookEvent): HookEvent {
     timestamp,
     event.humanInTheLoop ? JSON.stringify(event.humanInTheLoop) : null,
     humanInTheLoopStatus ? JSON.stringify(humanInTheLoopStatus) : null,
-    event.model_name || null
+    event.model_name || null,
+    event.subagent_type || null,
+    event.description || null,
+    event.parent_session_id || null,
+    event.agent_id || null
   );
 
   return {
@@ -171,7 +159,9 @@ export function getFilterOptions(): FilterOptions {
 
 export function getRecentEvents(limit: number = 300): HookEvent[] {
   const stmt = db.prepare(`
-    SELECT id, source_app, session_id, hook_event_type, payload, chat, summary, timestamp, humanInTheLoop, humanInTheLoopStatus, model_name
+    SELECT id, source_app, session_id, hook_event_type, payload, chat, summary,
+           timestamp, humanInTheLoop, humanInTheLoopStatus, model_name,
+           subagent_type, description, parent_session_id, agent_id
     FROM events
     ORDER BY timestamp DESC
     LIMIT ?
@@ -190,163 +180,12 @@ export function getRecentEvents(limit: number = 300): HookEvent[] {
     timestamp: row.timestamp,
     humanInTheLoop: row.humanInTheLoop ? JSON.parse(row.humanInTheLoop) : undefined,
     humanInTheLoopStatus: row.humanInTheLoopStatus ? JSON.parse(row.humanInTheLoopStatus) : undefined,
-    model_name: row.model_name || undefined
+    model_name: row.model_name || undefined,
+    subagent_type: row.subagent_type || undefined,
+    description: row.description || undefined,
+    parent_session_id: row.parent_session_id || undefined,
+    agent_id: row.agent_id || undefined
   })).reverse();
-}
-
-// Theme database functions
-export function insertTheme(theme: Theme): Theme {
-  const stmt = db.prepare(`
-    INSERT INTO themes (id, name, displayName, description, colors, isPublic, authorId, authorName, createdAt, updatedAt, tags, downloadCount, rating, ratingCount)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
-  stmt.run(
-    theme.id,
-    theme.name,
-    theme.displayName,
-    theme.description || null,
-    JSON.stringify(theme.colors),
-    theme.isPublic ? 1 : 0,
-    theme.authorId || null,
-    theme.authorName || null,
-    theme.createdAt,
-    theme.updatedAt,
-    JSON.stringify(theme.tags),
-    theme.downloadCount || 0,
-    theme.rating || 0,
-    theme.ratingCount || 0
-  );
-  
-  return theme;
-}
-
-export function updateTheme(id: string, updates: Partial<Theme>): boolean {
-  const allowedFields = ['displayName', 'description', 'colors', 'isPublic', 'updatedAt', 'tags'];
-  const setClause = Object.keys(updates)
-    .filter(key => allowedFields.includes(key))
-    .map(key => `${key} = ?`)
-    .join(', ');
-  
-  if (!setClause) return false;
-  
-  const values = Object.keys(updates)
-    .filter(key => allowedFields.includes(key))
-    .map(key => {
-      if (key === 'colors' || key === 'tags') {
-        return JSON.stringify(updates[key as keyof Theme]);
-      }
-      if (key === 'isPublic') {
-        return updates[key as keyof Theme] ? 1 : 0;
-      }
-      return updates[key as keyof Theme];
-    });
-  
-  const stmt = db.prepare(`UPDATE themes SET ${setClause} WHERE id = ?`);
-  const result = stmt.run(...values, id);
-  
-  return result.changes > 0;
-}
-
-export function getTheme(id: string): Theme | null {
-  const stmt = db.prepare('SELECT * FROM themes WHERE id = ?');
-  const row = stmt.get(id) as any;
-  
-  if (!row) return null;
-  
-  return {
-    id: row.id,
-    name: row.name,
-    displayName: row.displayName,
-    description: row.description,
-    colors: JSON.parse(row.colors),
-    isPublic: Boolean(row.isPublic),
-    authorId: row.authorId,
-    authorName: row.authorName,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    tags: JSON.parse(row.tags || '[]'),
-    downloadCount: row.downloadCount,
-    rating: row.rating,
-    ratingCount: row.ratingCount
-  };
-}
-
-export function getThemes(query: ThemeSearchQuery = {}): Theme[] {
-  let sql = 'SELECT * FROM themes WHERE 1=1';
-  const params: any[] = [];
-  
-  if (query.isPublic !== undefined) {
-    sql += ' AND isPublic = ?';
-    params.push(query.isPublic ? 1 : 0);
-  }
-  
-  if (query.authorId) {
-    sql += ' AND authorId = ?';
-    params.push(query.authorId);
-  }
-  
-  if (query.query) {
-    sql += ' AND (name LIKE ? OR displayName LIKE ? OR description LIKE ?)';
-    const searchTerm = `%${query.query}%`;
-    params.push(searchTerm, searchTerm, searchTerm);
-  }
-  
-  // Add sorting
-  const sortBy = query.sortBy || 'created';
-  const sortOrder = query.sortOrder || 'desc';
-  const sortColumn = {
-    name: 'name',
-    created: 'createdAt',
-    updated: 'updatedAt',
-    downloads: 'downloadCount',
-    rating: 'rating'
-  }[sortBy] || 'createdAt';
-  
-  sql += ` ORDER BY ${sortColumn} ${sortOrder.toUpperCase()}`;
-  
-  // Add pagination
-  if (query.limit) {
-    sql += ' LIMIT ?';
-    params.push(query.limit);
-    
-    if (query.offset) {
-      sql += ' OFFSET ?';
-      params.push(query.offset);
-    }
-  }
-  
-  const stmt = db.prepare(sql);
-  const rows = stmt.all(...params) as any[];
-  
-  return rows.map(row => ({
-    id: row.id,
-    name: row.name,
-    displayName: row.displayName,
-    description: row.description,
-    colors: JSON.parse(row.colors),
-    isPublic: Boolean(row.isPublic),
-    authorId: row.authorId,
-    authorName: row.authorName,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    tags: JSON.parse(row.tags || '[]'),
-    downloadCount: row.downloadCount,
-    rating: row.rating,
-    ratingCount: row.ratingCount
-  }));
-}
-
-export function deleteTheme(id: string): boolean {
-  const stmt = db.prepare('DELETE FROM themes WHERE id = ?');
-  const result = stmt.run(id);
-  return result.changes > 0;
-}
-
-export function incrementThemeDownloadCount(id: string): boolean {
-  const stmt = db.prepare('UPDATE themes SET downloadCount = downloadCount + 1 WHERE id = ?');
-  const result = stmt.run(id);
-  return result.changes > 0;
 }
 
 // HITL helper functions
@@ -361,7 +200,9 @@ export function updateEventHITLResponse(id: number, response: any): HookEvent | 
   stmt.run(JSON.stringify(status), id);
 
   const selectStmt = db.prepare(`
-    SELECT id, source_app, session_id, hook_event_type, payload, chat, summary, timestamp, humanInTheLoop, humanInTheLoopStatus, model_name
+    SELECT id, source_app, session_id, hook_event_type, payload, chat, summary,
+           timestamp, humanInTheLoop, humanInTheLoopStatus, model_name,
+           subagent_type, description, parent_session_id, agent_id
     FROM events
     WHERE id = ?
   `);
@@ -380,7 +221,11 @@ export function updateEventHITLResponse(id: number, response: any): HookEvent | 
     timestamp: row.timestamp,
     humanInTheLoop: row.humanInTheLoop ? JSON.parse(row.humanInTheLoop) : undefined,
     humanInTheLoopStatus: row.humanInTheLoopStatus ? JSON.parse(row.humanInTheLoopStatus) : undefined,
-    model_name: row.model_name || undefined
+    model_name: row.model_name || undefined,
+    subagent_type: row.subagent_type || undefined,
+    description: row.description || undefined,
+    parent_session_id: row.parent_session_id || undefined,
+    agent_id: row.agent_id || undefined
   };
 }
 

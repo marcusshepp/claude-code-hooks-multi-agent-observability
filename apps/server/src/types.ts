@@ -36,6 +36,24 @@ export interface HookEvent {
   timestamp?: number;
   model_name?: string;
 
+  // Subagent attribution. `subagent_type` and `description` come from the
+  // parent's PreToolUse `tool_name == "Agent"` event (`tool_input.subagent_type`
+  // and `tool_input.description`); the server back-fills them onto the
+  // matching SubagentStart and onto every downstream tool event fired from
+  // inside the subagent (matched by `(session_id, agent_id)`).
+  //
+  // `agent_id` is Claude Code's per-subagent identifier — emitted at the top
+  // level of the hook payload on SubagentStart/Stop and on every tool event
+  // a subagent fires. It is NULL for the parent's own events.
+  //
+  // `parent_session_id` is forward-compatibility only: real Claude Code
+  // subagents share the parent's session_id and are differentiated by
+  // `agent_id`, so this column is normally NULL.
+  subagent_type?: string;
+  description?: string;
+  parent_session_id?: string;
+  agent_id?: string;
+
   // NEW: Optional HITL data
   humanInTheLoop?: HumanInTheLoop;
   humanInTheLoopStatus?: HumanInTheLoopStatus;
@@ -45,94 +63,4 @@ export interface FilterOptions {
   source_apps: string[];
   session_ids: string[];
   hook_event_types: string[];
-}
-
-// Theme-related interfaces for server-side storage and API
-export interface ThemeColors {
-  primary: string;
-  primaryHover: string;
-  primaryLight: string;
-  primaryDark: string;
-  bgPrimary: string;
-  bgSecondary: string;
-  bgTertiary: string;
-  bgQuaternary: string;
-  textPrimary: string;
-  textSecondary: string;
-  textTertiary: string;
-  textQuaternary: string;
-  borderPrimary: string;
-  borderSecondary: string;
-  borderTertiary: string;
-  accentSuccess: string;
-  accentWarning: string;
-  accentError: string;
-  accentInfo: string;
-  shadow: string;
-  shadowLg: string;
-  hoverBg: string;
-  activeBg: string;
-  focusRing: string;
-}
-
-export interface Theme {
-  id: string;
-  name: string;
-  displayName: string;
-  description?: string;
-  colors: ThemeColors;
-  isPublic: boolean;
-  authorId?: string;
-  authorName?: string;
-  createdAt: number;
-  updatedAt: number;
-  tags: string[];
-  downloadCount?: number;
-  rating?: number;
-  ratingCount?: number;
-}
-
-export interface ThemeSearchQuery {
-  query?: string;
-  tags?: string[];
-  authorId?: string;
-  isPublic?: boolean;
-  sortBy?: 'name' | 'created' | 'updated' | 'downloads' | 'rating';
-  sortOrder?: 'asc' | 'desc';
-  limit?: number;
-  offset?: number;
-}
-
-export interface ThemeShare {
-  id: string;
-  themeId: string;
-  shareToken: string;
-  expiresAt?: number;
-  isPublic: boolean;
-  allowedUsers: string[];
-  createdAt: number;
-  accessCount: number;
-}
-
-export interface ThemeRating {
-  id: string;
-  themeId: string;
-  userId: string;
-  rating: number; // 1-5
-  comment?: string;
-  createdAt: number;
-}
-
-export interface ThemeValidationError {
-  field: string;
-  message: string;
-  code: string;
-}
-
-export interface ApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
-  message?: string;
-  validationErrors?: ThemeValidationError[];
 }

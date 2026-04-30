@@ -1,21 +1,164 @@
 import { initDatabase, insertEvent, getFilterOptions, getRecentEvents, updateEventHITLResponse } from './db';
 import type { HookEvent, HumanInTheLoopResponse } from './types';
-import { 
-  createTheme, 
-  updateThemeById, 
-  getThemeById, 
-  searchThemes, 
-  deleteThemeById, 
-  exportThemeById, 
-  importTheme,
-  getThemeStats 
-} from './theme';
 
 // Initialize database
 initDatabase();
 
 // Store WebSocket clients
 const wsClients = new Set<any>();
+
+// ---------------------------------------------------------------------------
+// Subagent attribution back-fill
+// ---------------------------------------------------------------------------
+//
+// Real Claude Code emits the human-readable description + subagent_type only
+// on the parent's PreToolUse with tool_name == "Agent". The matching
+// SubagentStart event (and every downstream tool event from inside that
+// subagent) carries `agent_id` + `agent_type` at the top level — but no
+// description and no link back to the spawning Task call.
+//
+// To put the attribution badge on every event row we maintain two in-memory
+// maps:
+//
+//   pendingAgentSpawns[session_id] — FIFO of recent PreToolUse "Agent" calls
+//     captured on this parent session, each holding { subagent_type,
+//     description, timestamp }. The next SubagentStart that arrives on the
+//     same session pops the matching entry (by subagent_type) and inherits
+//     its description.
+//
+//   agentInfo[session_id::agent_id] — once the SubagentStart links a
+//     description to an agent_id, every subsequent tool event from that
+//     subagent (PreToolUse, PostToolUse, etc.) inherits it.
+//
+// Entries are LRU-evicted to keep memory bounded under long-running servers.
+// ---------------------------------------------------------------------------
+
+interface PendingSpawn {
+  subagent_type?: string;
+  description?: string;
+  timestamp: number;
+}
+
+interface AgentInfo {
+  subagent_type?: string;
+  description?: string;
+}
+
+const PENDING_SPAWN_TTL_MS = 5 * 60 * 1000; // forget 5min-old spawns
+const MAX_PENDING_PER_SESSION = 32;
+const MAX_AGENT_INFO_ENTRIES = 4096;
+
+const pendingAgentSpawns = new Map<string, PendingSpawn[]>();
+const agentInfo = new Map<string, AgentInfo>();
+
+function agentKey(sessionId: string, agentId: string): string {
+  return `${sessionId}::${agentId}`;
+}
+
+function evictOldestAgentInfo(): void {
+  if (agentInfo.size <= MAX_AGENT_INFO_ENTRIES) return;
+  // Maps preserve insertion order — drop the oldest 25% so we're not
+  // re-evicting on every insert.
+  const dropCount = Math.ceil(MAX_AGENT_INFO_ENTRIES * 0.25);
+  let dropped = 0;
+  for (const k of agentInfo.keys()) {
+    agentInfo.delete(k);
+    if (++dropped >= dropCount) break;
+  }
+}
+
+function recordAgentSpawn(event: HookEvent): void {
+  if (event.hook_event_type !== 'PreToolUse') return;
+  const payload = event.payload || {};
+  if (payload.tool_name !== 'Agent') return;
+
+  const subagentType = event.subagent_type;
+  const description = event.description;
+  if (!subagentType && !description) return;
+
+  // Spawn timestamps are wall-clock (server-side) so the TTL filter below
+  // is robust to skewed event timestamps (e.g. backfilled events, replays).
+  const list = pendingAgentSpawns.get(event.session_id) ?? [];
+  list.push({
+    subagent_type: subagentType,
+    description,
+    timestamp: Date.now(),
+  });
+
+  // Drop entries older than the TTL.
+  const cutoff = Date.now() - PENDING_SPAWN_TTL_MS;
+  const fresh = list.filter(s => s.timestamp >= cutoff);
+  // Cap per-session list length so a parent that fires hundreds of Task
+  // calls without their SubagentStarts ever arriving doesn't blow up memory.
+  while (fresh.length > MAX_PENDING_PER_SESSION) fresh.shift();
+
+  pendingAgentSpawns.set(event.session_id, fresh);
+}
+
+function backfillSubagentStart(event: HookEvent): void {
+  // SubagentStart already carries agent_type from the hook (we lift it to
+  // subagent_type in send_event.py). The description is what we need.
+  if (event.hook_event_type !== 'SubagentStart') return;
+  if (!event.agent_id) return;
+
+  const list = pendingAgentSpawns.get(event.session_id);
+  if (list && list.length > 0) {
+    // Prefer the oldest spawn whose subagent_type matches; fall back to the
+    // oldest spawn (FIFO) when nothing matches.
+    let pickIndex = -1;
+    if (event.subagent_type) {
+      pickIndex = list.findIndex(s => s.subagent_type === event.subagent_type);
+    }
+    if (pickIndex < 0) pickIndex = 0;
+
+    const spawn = list[pickIndex];
+    list.splice(pickIndex, 1);
+    if (list.length === 0) {
+      pendingAgentSpawns.delete(event.session_id);
+    } else {
+      pendingAgentSpawns.set(event.session_id, list);
+    }
+
+    if (spawn) {
+      if (!event.description && spawn.description) {
+        event.description = spawn.description;
+      }
+      if (!event.subagent_type && spawn.subagent_type) {
+        event.subagent_type = spawn.subagent_type;
+      }
+    }
+  }
+
+  // Cache for downstream tool events from this subagent.
+  agentInfo.set(agentKey(event.session_id, event.agent_id), {
+    subagent_type: event.subagent_type,
+    description: event.description,
+  });
+  evictOldestAgentInfo();
+}
+
+function backfillSubagentToolEvent(event: HookEvent): void {
+  // Any non-Agent event with an agent_id is a tool call from inside a
+  // subagent. Inherit description / subagent_type from the cached info.
+  if (!event.agent_id) return;
+  const info = agentInfo.get(agentKey(event.session_id, event.agent_id));
+  if (!info) return;
+  if (!event.subagent_type && info.subagent_type) {
+    event.subagent_type = info.subagent_type;
+  }
+  if (!event.description && info.description) {
+    event.description = info.description;
+  }
+}
+
+function applyAttributionEnrichment(event: HookEvent): void {
+  // Order matters: a PreToolUse from inside a subagent (agent_id present)
+  // should inherit info first, BEFORE we record any spawn it might be
+  // making for further-nested subagents.
+  backfillSubagentToolEvent(event);
+  backfillSubagentStart(event);
+  recordAgentSpawn(event);
+}
 
 // Helper function to send response to agent via WebSocket
 async function sendResponseToAgent(
@@ -123,8 +266,8 @@ const server = Bun.serve({
     // POST /events - Receive new events
     if (url.pathname === '/events' && req.method === 'POST') {
       try {
-        const event: HookEvent = await req.json();
-        
+        const event = (await req.json()) as HookEvent;
+
         // Validate required fields
         if (!event.source_app || !event.session_id || !event.hook_event_type || !event.payload) {
           return new Response(JSON.stringify({ error: 'Missing required fields' }), {
@@ -132,7 +275,13 @@ const server = Bun.serve({
             headers: { ...headers, 'Content-Type': 'application/json' }
           });
         }
-        
+
+        // Back-fill subagent attribution before insertion so the persisted
+        // row carries the description / subagent_type even when the hook
+        // payload itself didn't (subagents only get description from the
+        // parent's preceding Agent tool call — see notes above).
+        applyAttributionEnrichment(event);
+
         // Insert event into database
         const savedEvent = insertEvent(event);
         
@@ -178,10 +327,10 @@ const server = Bun.serve({
 
     // POST /events/:id/respond - Respond to HITL request
     if (url.pathname.match(/^\/events\/\d+\/respond$/) && req.method === 'POST') {
-      const id = parseInt(url.pathname.split('/')[2]);
+      const id = parseInt(url.pathname.split('/')[2] ?? '0');
 
       try {
-        const response: HumanInTheLoopResponse = await req.json();
+        const response = (await req.json()) as HumanInTheLoopResponse;
         response.respondedAt = Date.now();
 
         // Update event in database
@@ -229,182 +378,6 @@ const server = Bun.serve({
       }
     }
 
-    // Theme API endpoints
-    
-    // POST /api/themes - Create a new theme
-    if (url.pathname === '/api/themes' && req.method === 'POST') {
-      try {
-        const themeData = await req.json();
-        const result = await createTheme(themeData);
-        
-        const status = result.success ? 201 : 400;
-        return new Response(JSON.stringify(result), {
-          status,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      } catch (error) {
-        console.error('Error creating theme:', error);
-        return new Response(JSON.stringify({ 
-          success: false, 
-          error: 'Invalid request body' 
-        }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-    }
-    
-    // GET /api/themes - Search themes
-    if (url.pathname === '/api/themes' && req.method === 'GET') {
-      const query = {
-        query: url.searchParams.get('query') || undefined,
-        isPublic: url.searchParams.get('isPublic') ? url.searchParams.get('isPublic') === 'true' : undefined,
-        authorId: url.searchParams.get('authorId') || undefined,
-        sortBy: url.searchParams.get('sortBy') as any || undefined,
-        sortOrder: url.searchParams.get('sortOrder') as any || undefined,
-        limit: url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!) : undefined,
-        offset: url.searchParams.get('offset') ? parseInt(url.searchParams.get('offset')!) : undefined,
-      };
-      
-      const result = await searchThemes(query);
-      return new Response(JSON.stringify(result), {
-        headers: { ...headers, 'Content-Type': 'application/json' }
-      });
-    }
-    
-    // GET /api/themes/:id - Get a specific theme
-    if (url.pathname.startsWith('/api/themes/') && req.method === 'GET') {
-      const id = url.pathname.split('/')[3];
-      if (!id) {
-        return new Response(JSON.stringify({ 
-          success: false, 
-          error: 'Theme ID is required' 
-        }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-      
-      const result = await getThemeById(id);
-      const status = result.success ? 200 : 404;
-      return new Response(JSON.stringify(result), {
-        status,
-        headers: { ...headers, 'Content-Type': 'application/json' }
-      });
-    }
-    
-    // PUT /api/themes/:id - Update a theme
-    if (url.pathname.startsWith('/api/themes/') && req.method === 'PUT') {
-      const id = url.pathname.split('/')[3];
-      if (!id) {
-        return new Response(JSON.stringify({ 
-          success: false, 
-          error: 'Theme ID is required' 
-        }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-      
-      try {
-        const updates = await req.json();
-        const result = await updateThemeById(id, updates);
-        
-        const status = result.success ? 200 : 400;
-        return new Response(JSON.stringify(result), {
-          status,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      } catch (error) {
-        console.error('Error updating theme:', error);
-        return new Response(JSON.stringify({ 
-          success: false, 
-          error: 'Invalid request body' 
-        }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-    }
-    
-    // DELETE /api/themes/:id - Delete a theme
-    if (url.pathname.startsWith('/api/themes/') && req.method === 'DELETE') {
-      const id = url.pathname.split('/')[3];
-      if (!id) {
-        return new Response(JSON.stringify({ 
-          success: false, 
-          error: 'Theme ID is required' 
-        }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-      
-      const authorId = url.searchParams.get('authorId');
-      const result = await deleteThemeById(id, authorId || undefined);
-      
-      const status = result.success ? 200 : (result.error?.includes('not found') ? 404 : 403);
-      return new Response(JSON.stringify(result), {
-        status,
-        headers: { ...headers, 'Content-Type': 'application/json' }
-      });
-    }
-    
-    // GET /api/themes/:id/export - Export a theme
-    if (url.pathname.match(/^\/api\/themes\/[^\/]+\/export$/) && req.method === 'GET') {
-      const id = url.pathname.split('/')[3];
-      
-      const result = await exportThemeById(id);
-      if (!result.success) {
-        const status = result.error?.includes('not found') ? 404 : 400;
-        return new Response(JSON.stringify(result), {
-          status,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-      
-      return new Response(JSON.stringify(result.data), {
-        headers: { 
-          ...headers, 
-          'Content-Type': 'application/json',
-          'Content-Disposition': `attachment; filename="${result.data.theme.name}.json"`
-        }
-      });
-    }
-    
-    // POST /api/themes/import - Import a theme
-    if (url.pathname === '/api/themes/import' && req.method === 'POST') {
-      try {
-        const importData = await req.json();
-        const authorId = url.searchParams.get('authorId');
-        
-        const result = await importTheme(importData, authorId || undefined);
-        
-        const status = result.success ? 201 : 400;
-        return new Response(JSON.stringify(result), {
-          status,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      } catch (error) {
-        console.error('Error importing theme:', error);
-        return new Response(JSON.stringify({ 
-          success: false, 
-          error: 'Invalid import data' 
-        }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-    }
-    
-    // GET /api/themes/stats - Get theme statistics
-    if (url.pathname === '/api/themes/stats' && req.method === 'GET') {
-      const result = await getThemeStats();
-      return new Response(JSON.stringify(result), {
-        headers: { ...headers, 'Content-Type': 'application/json' }
-      });
-    }
-    
     // WebSocket upgrade
     if (url.pathname === '/stream') {
       const success = server.upgrade(req);
@@ -437,12 +410,10 @@ const server = Bun.serve({
     close(ws) {
       console.log('WebSocket client disconnected');
       wsClients.delete(ws);
-    },
-    
-    error(ws, error) {
-      console.error('WebSocket error:', error);
-      wsClients.delete(ws);
     }
+    // Note: Bun's WebSocketHandler has no `error` callback. Errors surface
+    // to the `close` handler with a non-1000 close code; that's enough for
+    // this lightweight broadcaster.
   }
 });
 
