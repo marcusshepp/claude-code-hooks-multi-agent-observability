@@ -2,26 +2,27 @@
   <Transition name="toast">
     <div
       v-if="isVisible"
-      class="fixed left-1/2 transform -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-[var(--theme-primary)] to-[var(--theme-primary-light)] text-white rounded-lg border-2 font-semibold drop-shadow-2xl transition-all duration-300"
+      class="fixed left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-md border bg-[var(--surface)] px-3 py-1.5 text-[12px] text-[var(--text-primary)] shadow-lg transition-colors duration-200"
       :style="{
-        top: `${16 + (index * 68)}px`,
+        top: `${20 + (index * 36)}px`,
         borderColor: agentColor,
-        boxShadow: `0 10px 40px -10px rgba(0, 0, 0, 0.5), 0 20px 50px -15px rgba(0, 0, 0, 0.3), 0 0 0 3px ${agentColor}33`
       }"
     >
-      <div
-        class="w-3 h-3 rounded-full"
+      <span
+        class="inline-block h-2 w-2 rounded-full"
         :style="{ backgroundColor: agentColor }"
-      ></div>
-      <span class="text-sm">
-        New Agent <span class="font-bold px-1.5 py-0.5 bg-white/20 rounded">"{{ agentName }}"</span> Joined
+      ></span>
+      <span class="font-mono">
+        new agent
+        <span class="text-[var(--text-primary)]">{{ agentName }}</span>
       </span>
       <button
+        type="button"
         @click="dismiss"
-        class="ml-2 text-white hover:text-white/80 transition-colors duration-200 font-bold text-lg leading-none"
+        class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded text-[var(--text-tertiary)] hover:bg-[var(--surface-inset)] hover:text-[var(--text-primary)] transition-colors duration-150"
         aria-label="Dismiss notification"
       >
-        ×
+        <X :size="10" :stroke-width="1.5" />
       </button>
     </div>
   </Transition>
@@ -29,6 +30,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
+import { X } from 'lucide-vue-next';
 
 const props = defineProps<{
   agentName: string;
@@ -50,48 +52,32 @@ const dismiss = () => {
     clearTimeout(dismissTimer);
     dismissTimer = null;
   }
-  // Wait for animation to complete before emitting
-  setTimeout(() => {
-    emit('dismiss');
-  }, 300);
+  setTimeout(() => emit('dismiss'), 200);
 };
 
 onMounted(() => {
-  // Show toast with slight delay for animation
   requestAnimationFrame(() => {
     isVisible.value = true;
   });
 
-  // Auto-dismiss after duration (default 4s)
-  const totalDuration = props.duration || 4000;
-  dismissTimer = window.setTimeout(() => {
-    dismiss();
-  }, totalDuration);
+  const totalDuration = props.duration ?? 4000;
+  dismissTimer = window.setTimeout(() => dismiss(), totalDuration);
 });
 
 onUnmounted(() => {
-  if (dismissTimer !== null) {
-    clearTimeout(dismissTimer);
-  }
+  if (dismissTimer !== null) clearTimeout(dismissTimer);
 });
 </script>
 
 <style scoped>
-.toast-enter-active {
-  transition: all 0.3s ease-out;
-}
-
+.toast-enter-active,
 .toast-leave-active {
-  transition: all 0.3s ease-in;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.toast-enter-from {
-  opacity: 0;
-  transform: translate(-50%, -20px);
-}
-
+.toast-enter-from,
 .toast-leave-to {
   opacity: 0;
-  transform: translate(-50%, -20px);
+  transform: translate(-50%, -8px);
 }
 </style>

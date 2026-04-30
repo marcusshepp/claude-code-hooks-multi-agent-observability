@@ -36,6 +36,17 @@ export interface HookEvent {
   timestamp?: number;
   model_name?: string;
 
+  // Subagent attribution. The server back-fills these onto every
+  // subagent-issued event (matched by session_id + agent_id) so each row
+  // shows which subagent — and which Task description — issued the call.
+  // `agent_id` is Claude Code's per-subagent identifier (NULL for the
+  // parent's own events). `parent_session_id` is forward-compat only —
+  // real Claude Code subagents share the parent's session_id.
+  subagent_type?: string;
+  description?: string;
+  parent_session_id?: string;
+  agent_id?: string;
+
   // NEW: Optional HITL data
   humanInTheLoop?: HumanInTheLoop;
   humanInTheLoopStatus?: HumanInTheLoopStatus;
@@ -52,7 +63,7 @@ export interface WebSocketMessage {
   data: HookEvent | HookEvent[] | HumanInTheLoopResponse;
 }
 
-export type TimeRange = '1m' | '3m' | '5m' | '10m';
+export type TimeRange = '1m' | '5m' | '15m';
 
 export interface ChartDataPoint {
   timestamp: number;

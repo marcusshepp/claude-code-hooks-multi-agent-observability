@@ -1,74 +1,61 @@
 <template>
-  <div class="agent-swim-lane">
-    <div class="lane-header">
-      <div class="header-left">
-        <div class="agent-label-container">
-          <span
-            class="agent-label-app"
-            :style="{
-              backgroundColor: getHexColorForApp(appName),
-              borderColor: getHexColorForApp(appName)
-            }"
-          >
-            <span class="font-mono text-xs">{{ appName }}</span>
-          </span>
-          <span
-            class="agent-label-session"
-            :style="{
-              backgroundColor: getHexColorForSession(sessionId),
-              borderColor: getHexColorForSession(sessionId)
-            }"
-          >
-            <span class="font-mono text-xs">{{ sessionId }}</span>
-          </span>
-        </div>
-        <div
-          v-if="modelName"
-          class="model-badge"
-          :title="`Model: ${modelName}`"
-        >
-          <span class="text-base">🧠</span>
-          <span class="text-xs font-bold">{{ formatModelName(modelName) }}</span>
-        </div>
-        <div
-          class="event-count-badge"
-          @mouseover="hoveredEventCount = true"
-          @mouseleave="hoveredEventCount = false"
-          :title="`Total events in the last ${timeRange === '1m' ? '1 minute' : timeRange === '3m' ? '3 minutes' : '5 minutes'}`"
-        >
-          <span class="text-base w-4 flex-shrink-0">⚡</span>
-          <span class="text-xs font-bold" :class="hoveredEventCount ? 'min-w-[65px]' : ''">
-            {{ hoveredEventCount ? `${totalEventCount} Events` : totalEventCount }}
-          </span>
-        </div>
-        <div
-          class="tool-call-badge"
-          @mouseover="hoveredToolCount = true"
-          @mouseleave="hoveredToolCount = false"
-          :title="`Tool calls in the last ${timeRange === '1m' ? '1 minute' : timeRange === '3m' ? '3 minutes' : '5 minutes'}`"
-        >
-          <span class="text-base w-4 flex-shrink-0">🔧</span>
-          <span class="text-xs font-bold" :class="hoveredToolCount ? 'min-w-[75px]' : ''">
-            {{ hoveredToolCount ? `${toolCallCount} Tool Calls` : toolCallCount }}
-          </span>
-        </div>
-        <div
-          class="avg-time-badge flex items-center gap-1.5 px-2 py-2 bg-[var(--theme-bg-tertiary)] rounded-lg border border-[var(--theme-border-primary)] shadow-sm min-h-[28px]"
-          @mouseover="hoveredAvgTime = true"
-          @mouseleave="hoveredAvgTime = false"
-          :title="`Average time between events in the last ${timeRange === '1m' ? '1 minute' : timeRange === '3m' ? '3 minutes' : '5 minutes'}`"
-        >
-          <span class="text-lg w-5 flex-shrink-0">🕐</span>
-          <span class="text-sm font-bold text-[var(--theme-text-primary)]" :class="hoveredAvgTime ? 'min-w-[90px]' : ''">
-            {{ hoveredAvgTime ? `Avg Gap: ${formatGap(agentEventTimingMetrics.avgGap)}` : formatGap(agentEventTimingMetrics.avgGap) }}
-          </span>
-        </div>
-      </div>
-      <button @click="emit('close')" class="close-btn" title="Remove this swim lane">
-        ✕
+  <div class="flex w-full flex-col gap-0.5">
+    <!-- 28px header line -->
+    <div class="flex h-7 items-center gap-2 px-1 text-[11px]">
+      <Activity
+        class="w-3.5 h-3.5 shrink-0"
+        :stroke-width="1.5"
+        :style="{ color: getHexColorForApp(appName) }"
+      />
+
+      <!-- app:session, mono -->
+      <span class="font-mono text-[var(--text-primary)]" :title="agentName">
+        <span :style="{ color: getHexColorForApp(appName) }">{{ appName }}</span>
+        <span class="text-[var(--text-tertiary)]">:</span>
+        <span class="text-[var(--text-secondary)]">{{ sessionId }}</span>
+      </span>
+
+      <!-- Subagent type pill (accent) -->
+      <span
+        v-if="subagentType"
+        class="rounded-md px-1.5 py-0.5 font-mono text-[11px]"
+        style="background-color: rgba(0, 174, 239, 0.15); border: 1px solid rgba(0, 174, 239, 0.5); color: var(--accent);"
+        :title="`Subagent: ${subagentType}`"
+      >
+        {{ subagentType }}
+      </span>
+
+      <!-- Model muted -->
+      <span
+        v-if="modelName"
+        class="font-mono text-[var(--text-tertiary)]"
+        :title="`Model: ${modelName}`"
+      >
+        {{ formatModelName(modelName) }}
+      </span>
+
+      <!-- Inline summary metrics (mono, dot-separated) -->
+      <span class="ml-2 font-mono text-[var(--text-tertiary)]">
+        <span class="text-[var(--text-primary)] tabular-nums">{{ totalEventCount }}</span> events
+        <span class="mx-0.5">·</span>
+        <span class="text-[var(--text-primary)] tabular-nums">{{ toolCallCount }}</span> tools
+        <span class="mx-0.5">·</span>
+        <span class="text-[var(--text-tertiary)]">avg</span>
+        <span class="ml-1 text-[var(--text-primary)] tabular-nums">{{ formatGap(agentEventTimingMetrics.avgGap) }}</span>
+      </span>
+
+      <button
+        type="button"
+        @click="emit('close')"
+        class="ml-auto inline-flex h-5 w-5 items-center justify-center rounded text-[var(--text-tertiary)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)] transition-colors duration-150"
+        title="Remove this swim lane"
+        aria-label="Remove this swim lane"
+      >
+        <X :size="12" :stroke-width="1.5" />
       </button>
     </div>
-    <div ref="chartContainer" class="chart-wrapper">
+
+    <div ref="chartContainer" class="relative w-full overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
       <canvas
         ref="canvas"
         class="w-full cursor-crosshair"
@@ -80,7 +67,7 @@
       ></canvas>
       <div
         v-if="tooltip.visible"
-        class="absolute bg-gradient-to-r from-[var(--theme-primary)] to-[var(--theme-primary-dark)] text-white px-2 py-1.5 rounded-lg text-xs pointer-events-none z-10 shadow-lg border border-[var(--theme-primary-light)] font-bold drop-shadow-md"
+        class="absolute z-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-1.5 py-1 font-mono text-[11px] text-[var(--text-primary)] pointer-events-none whitespace-nowrap"
         :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
       >
         {{ tooltip.text }}
@@ -89,10 +76,7 @@
         v-if="!hasData"
         class="absolute inset-0 flex items-center justify-center"
       >
-        <p class="text-[var(--theme-text-tertiary)] text-sm font-semibold">
-          <span class="mr-1">⏳</span>
-          Waiting for events...
-        </p>
+        <span class="font-mono text-[11px] text-[var(--text-tertiary)]">waiting...</span>
       </div>
     </div>
   </div>
@@ -100,14 +84,15 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
+import { Activity, X } from 'lucide-vue-next';
 import type { HookEvent, TimeRange, ChartConfig } from '../types';
 import { useAgentChartData } from '../composables/useAgentChartData';
 import { createChartRenderer, type ChartDimensions } from '../utils/chartRenderer';
-import { useEventEmojis } from '../composables/useEventEmojis';
 import { useEventColors } from '../composables/useEventColors';
+import { cssVar } from '../utils/cssVar';
 
 const props = defineProps<{
-  agentName: string; // Format: "app:session" (e.g., "claude-code:a1b2c3d4")
+  agentName: string; // Format: "app:session" (e.g. "claude-code:a1b2c3d4")
   events: HookEvent[];
   timeRange: TimeRange;
 }>();
@@ -118,49 +103,40 @@ const emit = defineEmits<{
 
 const canvas = ref<HTMLCanvasElement>();
 const chartContainer = ref<HTMLDivElement>();
-const chartHeight = 80;
-const hoveredEventCount = ref(false);
-const hoveredToolCount = ref(false);
-const hoveredAvgTime = ref(false);
+const chartHeight = 48;
 
-// Format gap time in ms to readable string (e.g., "125ms" or "1.2s")
 const formatGap = (gapMs: number): string => {
   if (gapMs === 0) return '—';
-  if (gapMs < 1000) {
-    return `${Math.round(gapMs)}ms`;
-  }
+  if (gapMs < 1000) return `${Math.round(gapMs)}ms`;
   return `${(gapMs / 1000).toFixed(1)}s`;
 };
 
-// Extract app name and session ID from agent ID for display
-const appName = computed(() => props.agentName.split(':')[0]);
-const sessionId = computed(() => props.agentName.split(':')[1]);
+const appName = computed(() => props.agentName.split(':')[0] ?? props.agentName);
+const sessionId = computed(() => props.agentName.split(':')[1] ?? '');
 
-// Get model name from most recent event for this agent
-const modelName = computed(() => {
-  const [targetApp, targetSession] = props.agentName.split(':');
-  const agentEvents = props.events
-    .filter(e => e.source_app === targetApp && e.session_id.slice(0, 8) === targetSession)
-    .filter(e => e.model_name); // Only events with model_name
-
-  if (agentEvents.length === 0) return null;
-
-  // Get most recent event's model name
-  const mostRecent = agentEvents[agentEvents.length - 1];
-  return mostRecent.model_name;
+// Get the most recent event for this agent (for model_name + subagent_type)
+const matchedEvents = computed(() => {
+  const targetApp = appName.value;
+  const targetSession = sessionId.value;
+  return props.events.filter(e => e.source_app === targetApp && e.session_id.slice(0, 8) === targetSession);
 });
 
-// Format model name for display (e.g., "claude-haiku-4-5-20251001" -> "haiku-4-5")
+const modelName = computed(() => {
+  const events = matchedEvents.value.filter(e => e.model_name);
+  if (events.length === 0) return null;
+  return events[events.length - 1].model_name;
+});
+
+const subagentType = computed(() => {
+  const events = matchedEvents.value.filter(e => e.subagent_type);
+  if (events.length === 0) return null;
+  return events[events.length - 1].subagent_type;
+});
+
 const formatModelName = (name: string | null | undefined): string => {
   if (!name) return '';
-
-  // Extract model family and version
-  // "claude-haiku-4-5-20251001" -> "haiku-4-5"
-  // "claude-sonnet-4-5-20250929" -> "sonnet-4-5"
   const parts = name.split('-');
-  if (parts.length >= 4) {
-    return `${parts[1]}-${parts[2]}-${parts[3]}`;
-  }
+  if (parts.length >= 4) return `${parts[1]}-${parts[2]}-${parts[3]}`;
   return name;
 };
 
@@ -170,7 +146,7 @@ const {
   getChartData,
   setTimeRange,
   cleanup: cleanupChartData,
-  eventTimingMetrics: agentEventTimingMetrics
+  eventTimingMetrics: agentEventTimingMetrics,
 } = useAgentChartData(props.agentName);
 
 let renderer: ReturnType<typeof createChartRenderer> | null = null;
@@ -178,7 +154,6 @@ let resizeObserver: ResizeObserver | null = null;
 let animationFrame: number | null = null;
 const processedEventIds = new Set<string>();
 
-const { formatEventTypeLabel } = useEventEmojis();
 const { getHexColorForApp, getHexColorForSession } = useEventColors();
 
 const hasData = computed(() => dataPoints.value.some(dp => dp.count > 0));
@@ -188,41 +163,27 @@ const totalEventCount = computed(() => {
 });
 
 const toolCallCount = computed(() => {
-  return dataPoints.value.reduce((sum, dp) => {
-    return sum + (dp.eventTypes?.['PreToolUse'] || 0);
-  }, 0);
+  return dataPoints.value.reduce((sum, dp) => sum + (dp.eventTypes?.['PreToolUse'] || 0), 0);
 });
 
 const chartAriaLabel = computed(() => {
-  const [app, session] = props.agentName.split(':');
-  return `Activity chart for ${app} (session: ${session}) showing ${totalEventCount.value} events`;
+  return `Activity chart for ${appName.value} (${sessionId.value}) — ${totalEventCount.value} events`;
 });
 
-const tooltip = ref({
-  visible: false,
-  x: 0,
-  y: 0,
-  text: ''
-});
-
-const getThemeColor = (property: string): string => {
-  const style = getComputedStyle(document.documentElement);
-  const color = style.getPropertyValue(`--theme-${property}`).trim();
-  return color || '#3B82F6';
-};
+const tooltip = ref({ visible: false, x: 0, y: 0, text: '' });
 
 const getActiveConfig = (): ChartConfig => {
   return {
     maxDataPoints: 60,
-    animationDuration: 300,
+    animationDuration: 200,
     barWidth: 3,
     barGap: 1,
     colors: {
-      primary: getThemeColor('primary'),
-      glow: getThemeColor('primary-light'),
-      axis: getThemeColor('border-primary'),
-      text: getThemeColor('text-tertiary')
-    }
+      primary: cssVar('--accent', '#00aeef'),
+      glow: cssVar('--accent', '#00aeef'),
+      axis: cssVar('--border', '#1f1f1f'),
+      text: cssVar('--text-tertiary', '#64748b'),
+    },
   };
 };
 
@@ -232,25 +193,23 @@ const getDimensions = (): ChartDimensions => {
     width,
     height: chartHeight,
     padding: {
-      top: 7,
-      right: 7,
-      bottom: 20,
-      left: 7
-    }
+      top: 4,
+      right: 4,
+      bottom: 12,
+      left: 4,
+    },
   };
 };
 
 const render = () => {
   if (!renderer || !canvas.value) return;
-
   const data = getChartData();
   const maxValue = Math.max(...data.map(d => d.count), 1);
-
   renderer.clear();
   renderer.drawBackground();
   renderer.drawAxes();
   renderer.drawTimeLabels(props.timeRange);
-  renderer.drawBars(data, maxValue, 1, formatEventTypeLabel, getHexColorForSession);
+  renderer.drawBars(data, maxValue, 1, undefined, getHexColorForSession);
 };
 
 const animateNewEvent = (x: number, y: number) => {
@@ -259,13 +218,10 @@ const animateNewEvent = (x: number, y: number) => {
 
   const animate = () => {
     if (!renderer) return;
-
     render();
     renderer.drawPulseEffect(x, y, radius, opacity);
-
     radius += 2;
     opacity -= 0.02;
-
     if (opacity > 0) {
       animationFrame = requestAnimationFrame(animate);
     } else {
@@ -278,7 +234,6 @@ const animateNewEvent = (x: number, y: number) => {
 
 const handleResize = () => {
   if (!renderer || !canvas.value) return;
-
   const dimensions = getDimensions();
   renderer.resize(dimensions);
   render();
@@ -288,7 +243,6 @@ const processNewEvents = () => {
   const currentEvents = props.events;
   const newEventsToProcess: HookEvent[] = [];
 
-  // Find events that haven't been processed yet
   currentEvents.forEach(event => {
     const eventKey = `${event.id}-${event.timestamp}`;
     if (!processedEventIds.has(eventKey)) {
@@ -297,10 +251,9 @@ const processNewEvents = () => {
     }
   });
 
-  // Parse agent ID to get app and session
-  const [targetApp, targetSession] = props.agentName.split(':');
+  const targetApp = appName.value;
+  const targetSession = sessionId.value;
 
-  // Process new events (filter by agent ID: app:session)
   newEventsToProcess.forEach(event => {
     if (
       event.hook_event_type !== 'refresh' &&
@@ -310,7 +263,6 @@ const processNewEvents = () => {
     ) {
       addEvent(event);
 
-      // Trigger pulse animation for new event
       if (renderer && canvas.value) {
         const chartArea = getDimensions();
         const x = chartArea.width - chartArea.padding.right - 10;
@@ -320,21 +272,16 @@ const processNewEvents = () => {
     }
   });
 
-  // Clean up old event IDs to prevent memory leak
   const currentEventIds = new Set(currentEvents.map(e => `${e.id}-${e.timestamp}`));
   processedEventIds.forEach(id => {
-    if (!currentEventIds.has(id)) {
-      processedEventIds.delete(id);
-    }
+    if (!currentEventIds.has(id)) processedEventIds.delete(id);
   });
 
   render();
 };
 
-// Watch for new events - immediate: true ensures we process existing events on mount
 watch(() => props.events, processNewEvents, { deep: true, immediate: true });
 
-// Watch for time range changes - update internal timeRange and trigger reaggregation
 watch(() => props.timeRange, (newRange) => {
   setTimeRange(newRange);
   render();
@@ -353,7 +300,7 @@ const handleMouseMove = (event: MouseEvent) => {
     x: dimensions.padding.left,
     y: dimensions.padding.top,
     width: dimensions.width - dimensions.padding.left - dimensions.padding.right,
-    height: dimensions.height - dimensions.padding.top - dimensions.padding.bottom
+    height: dimensions.height - dimensions.padding.top - dimensions.padding.bottom,
   };
 
   const barWidth = chartArea.width / data.length;
@@ -363,14 +310,14 @@ const handleMouseMove = (event: MouseEvent) => {
     const point = data[barIndex];
     if (point.count > 0) {
       const eventTypesText = Object.entries(point.eventTypes || {})
-        .map(([type, count]) => `${type}: ${count}`)
-        .join(', ');
+        .map(([type, count]) => `${type}:${count}`)
+        .join(' ');
 
       tooltip.value = {
         visible: true,
         x: event.clientX - rect.left,
-        y: event.clientY - rect.top - 30,
-        text: `${point.count} events${eventTypesText ? ` (${eventTypesText})` : ''}`
+        y: event.clientY - rect.top - 28,
+        text: `${point.count}${eventTypesText ? ` (${eventTypesText})` : ''}`,
       };
       return;
     }
@@ -383,13 +330,6 @@ const handleMouseLeave = () => {
   tooltip.value.visible = false;
 };
 
-// Watch for theme changes
-const themeObserver = new MutationObserver(() => {
-  if (renderer) {
-    render();
-  }
-});
-
 onMounted(() => {
   if (!canvas.value || !chartContainer.value) return;
 
@@ -398,178 +338,24 @@ onMounted(() => {
 
   renderer = createChartRenderer(canvas.value, dimensions, config);
 
-  // Set up resize observer
   resizeObserver = new ResizeObserver(handleResize);
   resizeObserver.observe(chartContainer.value);
 
-  // Observe theme changes
-  themeObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['class']
-  });
-
-  // Initial render
+  // Initial paint. After this the canvas is event-driven only — every
+  // render is triggered by a watcher (props.events / timeRange) or the
+  // per-event pulse animation. See punch list #3 + #7 — the previous
+  // 30-FPS rAF loop kept the chart redrawing forever even on an idle
+  // dashboard.
   render();
-
-  // Start optimized render loop with FPS limiting
-  let lastRenderTime = 0;
-  const targetFPS = 30;
-  const frameInterval = 1000 / targetFPS;
-
-  const renderLoop = (currentTime: number) => {
-    const deltaTime = currentTime - lastRenderTime;
-
-    if (deltaTime >= frameInterval) {
-      render();
-      lastRenderTime = currentTime - (deltaTime % frameInterval);
-    }
-
-    requestAnimationFrame(renderLoop);
-  };
-  requestAnimationFrame(renderLoop);
 });
 
 onUnmounted(() => {
   cleanupChartData();
-
-  if (renderer) {
-    renderer.stopAnimation();
-  }
-
-  if (resizeObserver && chartContainer.value) {
-    resizeObserver.disconnect();
-  }
-
-  if (animationFrame) {
+  if (renderer) renderer.stopAnimation();
+  if (resizeObserver && chartContainer.value) resizeObserver.disconnect();
+  if (animationFrame !== null) {
     cancelAnimationFrame(animationFrame);
+    animationFrame = null;
   }
-
-  themeObserver.disconnect();
 });
 </script>
-
-<style scoped>
-.agent-swim-lane {
-  width: 100%;
-  background: transparent;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.lane-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 0 7px;
-  gap: 8px;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.agent-label-container {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  white-space: nowrap;
-}
-
-.agent-label-app,
-.agent-label-session {
-  padding: 8px 8px;
-  border-radius: 0;
-  border: 1px solid currentColor;
-  color: white;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-}
-
-.agent-label-app {
-  border-radius: 3px 0 0 3px;
-}
-
-.agent-label-session {
-  border-radius: 0 3px 3px 0;
-  border-left: none;
-}
-
-.model-badge,
-.event-count-badge,
-.tool-call-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 8px;
-  background: var(--theme-bg-tertiary);
-  border: 1px solid var(--theme-border-primary);
-  border-radius: 8px;
-  color: var(--theme-text-primary);
-  font-size: 11px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  user-select: none;
-  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  min-height: 28px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-}
-
-.model-badge {
-  cursor: default;
-}
-
-.event-count-badge:hover,
-.tool-call-badge:hover,
-.model-badge:hover {
-  background: var(--theme-bg-quaternary);
-  border-color: var(--theme-primary);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.avg-time-badge {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-}
-
-.close-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 14px;
-  color: var(--theme-text-tertiary);
-  padding: 0;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  transition: all 0.2s;
-  flex-shrink: 0;
-}
-
-.close-btn:hover {
-  background: var(--theme-bg-quaternary);
-  color: var(--theme-text-primary);
-  transform: scale(1.1);
-}
-
-.chart-wrapper {
-  position: relative;
-  width: 100%;
-  border: 1px solid var(--theme-border-primary);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--theme-bg-tertiary);
-}
-</style>

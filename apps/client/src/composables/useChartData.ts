@@ -24,15 +24,10 @@ export function useChartData(agentIdFilter?: string) {
   let debounceTimer: number | null = null;
   const DEBOUNCE_DELAY = 50; // 50ms debounce
   
-  const timeRangeConfig = {
+  const timeRangeConfig: Record<TimeRange, { duration: number; bucketSize: number; maxPoints: number }> = {
     '1m': {
       duration: 60 * 1000, // 1 minute in ms
       bucketSize: 1000, // 1 second buckets
-      maxPoints: 60
-    },
-    '3m': {
-      duration: 3 * 60 * 1000, // 3 minutes in ms
-      bucketSize: 3000, // 3 second buckets
       maxPoints: 60
     },
     '5m': {
@@ -40,9 +35,9 @@ export function useChartData(agentIdFilter?: string) {
       bucketSize: 5000, // 5 second buckets
       maxPoints: 60
     },
-    '10m': {
-      duration: 10 * 60 * 1000, // 10 minutes in ms
-      bucketSize: 10000, // 10 second buckets
+    '15m': {
+      duration: 15 * 60 * 1000, // 15 minutes in ms
+      bucketSize: 15000, // 15 second buckets
       maxPoints: 60
     }
   };

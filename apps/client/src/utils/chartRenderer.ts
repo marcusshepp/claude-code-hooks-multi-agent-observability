@@ -1,4 +1,5 @@
 import type { ChartDataPoint, ChartConfig } from '../types';
+import { cssVar } from './cssVar';
 
 export interface ChartDimensions {
   width: number;
@@ -55,25 +56,9 @@ export class ChartRenderer {
   }
   
   drawBackground() {
-    const chartArea = this.getChartArea();
-    
-    // Create subtle gradient background
-    const gradient = this.ctx.createLinearGradient(
-      chartArea.x,
-      chartArea.y,
-      chartArea.x,
-      chartArea.y + chartArea.height
-    );
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 0.02)');
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.05)');
-    
-    this.ctx.fillStyle = gradient;
-    this.ctx.fillRect(
-      chartArea.x,
-      chartArea.y,
-      chartArea.width,
-      chartArea.height
-    );
+    // Intentionally a no-op — the surrounding container renders the
+    // background via CSS palette tokens. Drawing extra layers on the
+    // canvas just dirties the pixels we want to stay flat.
   }
   
   drawAxes() {
@@ -115,147 +100,109 @@ export class ChartRenderer {
     switch (timeRange) {
       case '1m':
         return ['60s', '45s', '30s', '15s', 'now'];
-      case '3m':
-        return ['3m', '2m', '1m', 'now'];
       case '5m':
         return ['5m', '4m', '3m', '2m', '1m', 'now'];
-      case '10m':
-        return ['10m', '8m', '6m', '4m', '2m', 'now'];
+      case '15m':
+        return ['15m', '12m', '9m', '6m', '3m', 'now'];
       default:
         return [];
     }
   }
   
+  // formatLabel kept in the signature for backwards compatibility with
+  // call sites that still pass `undefined`. Emoji canvas labels were
+  // removed (Track C) — swap to colored dots above each non-empty bar
+  // tinted by the dominant event type for that bucket.
   drawBars(
     dataPoints: ChartDataPoint[],
     maxValue: number,
     progress: number = 1,
-    formatLabel?: (eventTypes: Record<string, number>, toolEvents?: Record<string, number>) => string,
+    _formatLabel?: (eventTypes: Record<string, number>, toolEvents?: Record<string, number>) => string,
     getSessionColor?: (sessionId: string) => string
   ) {
     const chartArea = this.getChartArea();
     const barCount = this.config.maxDataPoints;
     const totalBarWidth = chartArea.width / barCount;
     const barWidth = this.config.barWidth;
-    
+
     dataPoints.forEach((point, index) => {
       if (point.count === 0) return;
-      
+
       const x = chartArea.x + (index * totalBarWidth) + (totalBarWidth - barWidth) / 2;
       const barHeight = (point.count / maxValue) * chartArea.height * progress;
       const y = chartArea.y + chartArea.height - barHeight;
-      
+
       // Get the dominant session color for this bar
       let barColor = this.config.colors.primary;
       if (getSessionColor && point.sessions && Object.keys(point.sessions).length > 0) {
-        // Get the session with the most events in this time bucket
         const dominantSession = Object.entries(point.sessions)
           .sort((a, b) => b[1] - a[1])[0][0];
         barColor = getSessionColor(dominantSession);
       }
-      
-      // Draw glow effect with session color
-      this.drawBarGlow(x, y, barWidth, barHeight, point.count / maxValue, barColor);
-      
-      // Draw bar with rounded top
+
+      // Subtle bar with no glow — keep the sparkline strip visually quiet.
       this.ctx.save();
       this.ctx.beginPath();
-      this.ctx.moveTo(x, y + 2);
+      this.ctx.moveTo(x, y + 1);
       this.ctx.lineTo(x, y + barHeight);
       this.ctx.lineTo(x + barWidth, y + barHeight);
-      this.ctx.lineTo(x + barWidth, y + 2);
-      this.ctx.arcTo(x + barWidth, y, x + barWidth / 2, y, 2);
-      this.ctx.arcTo(x, y, x, y + 2, 2);
+      this.ctx.lineTo(x + barWidth, y + 1);
+      this.ctx.arcTo(x + barWidth, y, x + barWidth / 2, y, 1);
+      this.ctx.arcTo(x, y, x, y + 1, 1);
       this.ctx.closePath();
-      
-      // Enhanced gradient with session color
-      const gradient = this.ctx.createLinearGradient(x, y, x, y + barHeight);
-      gradient.addColorStop(0, this.adjustColorOpacity(barColor, 0.9));
-      gradient.addColorStop(0.5, barColor);
-      gradient.addColorStop(1, this.adjustColorOpacity(barColor, 0.7));
-      
-      this.ctx.fillStyle = gradient;
+      this.ctx.fillStyle = barColor;
       this.ctx.fill();
       this.ctx.restore();
-      
-      // Draw emoji labels with tooltip background
-      if (formatLabel && point.eventTypes && Object.keys(point.eventTypes).length > 0 && barHeight > 10) {
-        const label = formatLabel(point.eventTypes, point.toolEvents);
-        if (label) {
+
+      // Colored dot above the bar tinted by dominant event type. Replaces
+      // the previous emoji label rendering — keep it small (3px radius)
+      // so the strip stays at 64px without crowding.
+      if (point.eventTypes && Object.keys(point.eventTypes).length > 0 && barHeight > 4) {
+        const dotColor = this.colorForDominantEventType(point.eventTypes);
+        if (dotColor) {
           this.ctx.save();
-          this.ctx.font = '20px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple Color Emoji", "Segoe UI Emoji", sans-serif';
-          
-          // Measure text first to get accurate dimensions
-          const metrics = this.ctx.measureText(label);
-          const padding = 8;
-          const bgWidth = metrics.width + padding * 2;
-          const bgHeight = 30;
-          
-          // Position label vertically centered on the bar
-          const labelX = x + barWidth / 2;
-          const labelY = y + barHeight / 2;
-          
-          // Draw tooltip background
-          const bgX = labelX - bgWidth / 2;
-          const bgY = labelY - bgHeight / 2;
-          
-          // Draw rounded rectangle background - lighter in dark mode
-          const isDark = document.documentElement.classList.contains('dark');
-          this.ctx.fillStyle = isDark ? 'rgba(75, 85, 99, 0.95)' : 'rgba(0, 0, 0, 0.85)';
           this.ctx.beginPath();
-          if ('roundRect' in this.ctx && typeof (this.ctx as any).roundRect === 'function') {
-            (this.ctx as any).roundRect(bgX, bgY, bgWidth, bgHeight, 7);
-          } else {
-            // Fallback for browsers without roundRect support
-            const radius = 7;
-            this.ctx.moveTo(bgX + radius, bgY);
-            this.ctx.lineTo(bgX + bgWidth - radius, bgY);
-            this.ctx.arcTo(bgX + bgWidth, bgY, bgX + bgWidth, bgY + radius, radius);
-            this.ctx.lineTo(bgX + bgWidth, bgY + bgHeight - radius);
-            this.ctx.arcTo(bgX + bgWidth, bgY + bgHeight, bgX + bgWidth - radius, bgY + bgHeight, radius);
-            this.ctx.lineTo(bgX + radius, bgY + bgHeight);
-            this.ctx.arcTo(bgX, bgY + bgHeight, bgX, bgY + bgHeight - radius, radius);
-            this.ctx.lineTo(bgX, bgY + radius);
-            this.ctx.arcTo(bgX, bgY, bgX + radius, bgY, radius);
-            this.ctx.closePath();
-          }
+          this.ctx.fillStyle = dotColor;
+          this.ctx.arc(x + barWidth / 2, Math.max(chartArea.y + 2, y - 4), 1.5, 0, Math.PI * 2);
           this.ctx.fill();
-          
-          // Draw text with proper centering
-          this.ctx.fillStyle = '#ffffff';
-          this.ctx.textAlign = 'left';
-          this.ctx.textBaseline = 'middle';
-          
-          // Calculate the actual text starting position (left-aligned within the box)
-          const textX = bgX + padding;
-          const textY = labelY;
-          this.ctx.fillText(label, textX, textY);
           this.ctx.restore();
         }
       }
     });
   }
-  
-  private drawBarGlow(x: number, y: number, width: number, height: number, intensity: number, color?: string) {
-    const glowRadius = 10 + (intensity * 20);
-    const centerX = x + width / 2;
-    const centerY = y + height / 2;
-    
-    const glowColor = color || this.config.colors.glow;
-    const gradient = this.ctx.createRadialGradient(
-      centerX, centerY, 0,
-      centerX, centerY, glowRadius
-    );
-    gradient.addColorStop(0, this.adjustColorOpacity(glowColor, 0.3 * intensity));
-    gradient.addColorStop(1, 'transparent');
-    
-    this.ctx.fillStyle = gradient;
-    this.ctx.fillRect(
-      centerX - glowRadius,
-      centerY - glowRadius,
-      glowRadius * 2,
-      glowRadius * 2
-    );
+
+  /**
+   * Pick a color for the dominant event type in a chart bucket. Shares
+   * the palette tokens declared in main.css so the canvas matches the
+   * surrounding HTML.
+   */
+  private colorForDominantEventType(eventTypes: Record<string, number>): string | null {
+    const entries = Object.entries(eventTypes);
+    if (entries.length === 0) return null;
+    entries.sort((a, b) => b[1] - a[1]);
+    const dominant = entries[0][0];
+    return ChartRenderer.eventTypeColor(dominant);
+  }
+
+  static eventTypeColor(eventType: string): string {
+    switch (eventType) {
+      case 'PostToolUse':
+      case 'SessionStart':
+        return cssVar('--success', '#34d399');
+      case 'PostToolUseFailure':
+      case 'SessionEnd':
+        return cssVar('--danger', '#ef4444');
+      case 'PermissionRequest':
+      case 'Notification':
+        return cssVar('--warning', '#fbbf24');
+      case 'SubagentStart':
+      case 'SubagentStop':
+      case 'PreToolUse':
+      case 'UserPromptSubmit':
+      case 'PreCompact':
+      default:
+        return cssVar('--accent', '#00aeef');
+    }
   }
   
   private adjustColorOpacity(color: string, opacity: number): string {

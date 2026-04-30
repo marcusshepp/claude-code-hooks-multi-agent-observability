@@ -1,113 +1,57 @@
-
+/**
+ * Per-app / per-session color generator. The dashboard uses these hex
+ * strings as the *base* for several visual affordances:
+ *
+ *   - Solid border / pill outline  (used as-is)
+ *   - Alpha-tinted background fill (`hexColor + '26'`, `+ '33'`, etc.)
+ *
+ * Because Tailwind / CSS doesn't accept an alpha-suffixed `hsl(...)` value,
+ * we MUST emit hex (`#rrggbb`) here. Concatenating an `'rr'` byte onto an
+ * `hsl(...)` string yields invalid CSS that the browser silently drops.
+ *
+ * The palette is derived deterministically from the input string via a hash
+ * → HSL hue (full 360° spread) → hex conversion. Saturation and lightness
+ * are tuned for the dark `#050505` canvas — 55% / 60% sits well next to
+ * `var(--accent)` (`#00aeef`) without competing with it.
+ *
+ * Apps and sessions share the same generator — same hashing input space,
+ * same palette family — so a session pill and its containing app pill
+ * read as related instead of jumping between palettes.
+ */
 export function useEventColors() {
-  const colorPalette = [
-    'bg-blue-500',
-    'bg-green-500',
-    'bg-yellow-500',
-    'bg-purple-500',
-    'bg-pink-500',
-    'bg-indigo-500',
-    'bg-red-500',
-    'bg-orange-500',
-    'bg-teal-500',
-    'bg-cyan-500',
-  ];
-
-  // Improved hash function with better distribution
+  // FNV-style hash with reasonable distribution across short strings.
   const hashString = (str: string): number => {
     let hash = 7151;
     for (let i = 0; i < str.length; i++) {
       hash = ((hash << 5) + hash) + str.charCodeAt(i);
     }
-    return Math.abs(hash >>> 0); // Use unsigned 32-bit integer
+    return Math.abs(hash >>> 0);
   };
 
-  const getColorForSession = (sessionId: string): string => {
-    const hash = hashString(sessionId);
-    const index = hash % colorPalette.length;
-    return colorPalette[index];
-  };
-
-  const getColorForApp = (appName: string): string => {
-    const hash = hashString(appName);
-    const index = hash % colorPalette.length;
-    return colorPalette[index];
-  };
-
-  const getGradientForSession = (sessionId: string): string => {
-    const baseColor = getColorForSession(sessionId);
-
-    // Map base colors to gradient classes
-    const gradientMap: Record<string, string> = {
-      'bg-blue-500': 'from-blue-500 to-blue-600',
-      'bg-green-500': 'from-green-500 to-green-600',
-      'bg-yellow-500': 'from-yellow-500 to-yellow-600',
-      'bg-purple-500': 'from-purple-500 to-purple-600',
-      'bg-pink-500': 'from-pink-500 to-pink-600',
-      'bg-indigo-500': 'from-indigo-500 to-indigo-600',
-      'bg-red-500': 'from-red-500 to-red-600',
-      'bg-orange-500': 'from-orange-500 to-orange-600',
-      'bg-teal-500': 'from-teal-500 to-teal-600',
-      'bg-cyan-500': 'from-cyan-500 to-cyan-600',
+  // HSL → hex (sRGB). h: 0–360, s/l: 0–100.
+  const hslToHex = (h: number, s: number, l: number): string => {
+    const sNorm = s / 100;
+    const lNorm = l / 100;
+    const k = (n: number): number => (n + h / 30) % 12;
+    const a = sNorm * Math.min(lNorm, 1 - lNorm);
+    const channel = (n: number): number => {
+      const v = lNorm - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+      return Math.round(v * 255);
     };
-
-    return `bg-gradient-to-r ${gradientMap[baseColor] || 'from-gray-500 to-gray-600'}`;
+    const toHex = (n: number): string => n.toString(16).padStart(2, '0');
+    return `#${toHex(channel(0))}${toHex(channel(8))}${toHex(channel(4))}`;
   };
 
-  const getGradientForApp = (appName: string): string => {
-    const baseColor = getColorForApp(appName);
-
-    // Map base colors to gradient classes
-    const gradientMap: Record<string, string> = {
-      'bg-blue-500': 'from-blue-500 to-blue-600',
-      'bg-green-500': 'from-green-500 to-green-600',
-      'bg-yellow-500': 'from-yellow-500 to-yellow-600',
-      'bg-purple-500': 'from-purple-500 to-purple-600',
-      'bg-pink-500': 'from-pink-500 to-pink-600',
-      'bg-indigo-500': 'from-indigo-500 to-indigo-600',
-      'bg-red-500': 'from-red-500 to-red-600',
-      'bg-orange-500': 'from-orange-500 to-orange-600',
-      'bg-teal-500': 'from-teal-500 to-teal-600',
-      'bg-cyan-500': 'from-cyan-500 to-cyan-600',
-    };
-
-    return `bg-gradient-to-r ${gradientMap[baseColor] || 'from-gray-500 to-gray-600'}`;
+  const hexFromKey = (key: string): string => {
+    const hue = hashString(key) % 360;
+    return hslToHex(hue, 55, 60);
   };
 
-  const tailwindToHex = (tailwindClass: string): string => {
-    const colorMap: Record<string, string> = {
-      'bg-blue-500': '#3B82F6',
-      'bg-green-500': '#22C55E',
-      'bg-yellow-500': '#EAB308',
-      'bg-purple-500': '#A855F7',
-      'bg-pink-500': '#EC4899',
-      'bg-indigo-500': '#6366F1',
-      'bg-red-500': '#EF4444',
-      'bg-orange-500': '#F97316',
-      'bg-teal-500': '#14B8A6',
-      'bg-cyan-500': '#06B6D4',
-    };
-    return colorMap[tailwindClass] || '#3B82F6'; // Default to blue
-  };
-
-  const getHexColorForSession = (sessionId: string): string => {
-    const tailwindClass = getColorForSession(sessionId);
-    return tailwindToHex(tailwindClass);
-  };
-
-  const getHexColorForApp = (appName: string): string => {
-    const hash = hashString(appName);
-    // Generate HSL color with fixed saturation and lightness for consistency
-    const hue = hash % 360;
-    return `hsl(${hue}, 70%, 50%)`;
-  };
+  const getHexColorForSession = (sessionId: string): string => hexFromKey(sessionId);
+  const getHexColorForApp = (appName: string): string => hexFromKey(appName);
 
   return {
-    getColorForSession,
-    getColorForApp,
-    getGradientForSession,
-    getGradientForApp,
     getHexColorForSession,
-    getHexColorForApp
+    getHexColorForApp,
   };
 }

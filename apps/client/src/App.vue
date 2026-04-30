@@ -1,76 +1,75 @@
 <template>
-  <div class="h-screen flex flex-col bg-[var(--theme-bg-secondary)]">
-    <!-- Header with Primary Theme Colors -->
-    <header class="short:hidden bg-gradient-to-r from-[var(--theme-primary)] to-[var(--theme-primary-light)] shadow-lg border-b-2 border-[var(--theme-primary-dark)]">
-      <div class="px-3 py-4 mobile:py-1.5 mobile:px-2 flex items-center justify-between mobile:gap-2">
-        <!-- Title Section - Hidden on mobile -->
-        <div class="mobile:hidden">
-          <h1 class="text-2xl font-bold text-white drop-shadow-lg">
-            Multi-Agent Observability
-          </h1>
-        </div>
+  <div class="h-screen flex flex-col bg-[var(--background)] text-[var(--text-primary)]">
+    <!-- Sticky 24px header: status dot, events count, clear, filters -->
+    <header
+      class="sticky top-0 z-30 flex h-6 items-center gap-2 px-3 border-b border-[var(--border)] bg-[var(--background)]"
+    >
+      <!-- Connection status dot -->
+      <Circle
+        :size="10"
+        :stroke-width="0"
+        fill="currentColor"
+        :class="[
+          'shrink-0',
+          isConnected ? 'text-[var(--success)]' : 'text-[var(--danger)]'
+        ]"
+        :title="isConnected ? 'Connected' : 'Disconnected'"
+      />
 
-        <!-- Connection Status -->
-        <div class="flex items-center mobile:space-x-1 space-x-1.5">
-          <div v-if="isConnected" class="flex items-center mobile:space-x-0.5 space-x-1.5">
-            <span class="relative flex mobile:h-2 mobile:w-2 h-3 w-3">
-              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-              <span class="relative inline-flex rounded-full mobile:h-2 mobile:w-2 h-3 w-3 bg-green-500"></span>
-            </span>
-            <span class="text-base mobile:text-xs text-white font-semibold drop-shadow-md mobile:hidden">Connected</span>
-          </div>
-          <div v-else class="flex items-center mobile:space-x-0.5 space-x-1.5">
-            <span class="relative flex mobile:h-2 mobile:w-2 h-3 w-3">
-              <span class="relative inline-flex rounded-full mobile:h-2 mobile:w-2 h-3 w-3 bg-red-500"></span>
-            </span>
-            <span class="text-base mobile:text-xs text-white font-semibold drop-shadow-md mobile:hidden">Disconnected</span>
-          </div>
-        </div>
+      <!-- Events count -->
+      <span class="font-mono text-xs text-[var(--text-secondary)]">
+        {{ events.length }}
+      </span>
 
-        <!-- Event Count and Theme Toggle -->
-        <div class="flex items-center mobile:space-x-1 space-x-2">
-          <span class="text-base mobile:text-xs text-white font-semibold drop-shadow-md bg-[var(--theme-primary-dark)] mobile:px-2 mobile:py-0.5 px-3 py-1.5 rounded-full border border-white/30">
-            {{ events.length }}
-          </span>
+      <div class="flex-1"></div>
 
-          <!-- Clear Button -->
-          <button
-            @click="handleClearClick"
-            class="p-3 mobile:p-1 rounded-lg bg-white/20 hover:bg-white/30 transition-all duration-200 border border-white/30 hover:border-white/50 backdrop-blur-sm shadow-lg hover:shadow-xl"
-            title="Clear events"
-          >
-            <span class="text-2xl mobile:text-base">🗑️</span>
-          </button>
+      <!-- Clear events (icon-only ghost button) -->
+      <button
+        type="button"
+        @click="handleClearClick"
+        class="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)] transition-colors duration-150"
+        title="Clear events"
+        aria-label="Clear events"
+      >
+        <Trash2 :size="12" :stroke-width="1.5" />
+      </button>
 
-          <!-- Filters Toggle Button -->
-          <button
-            @click="showFilters = !showFilters"
-            class="p-3 mobile:p-1 rounded-lg bg-white/20 hover:bg-white/30 transition-all duration-200 border border-white/30 hover:border-white/50 backdrop-blur-sm shadow-lg hover:shadow-xl"
-            :title="showFilters ? 'Hide filters' : 'Show filters'"
-          >
-            <span class="text-2xl mobile:text-base">📊</span>
-          </button>
+      <!-- Filters chevron (popover trigger) -->
+      <div ref="filtersWrapperRef" class="relative">
+        <button
+          ref="filtersTriggerRef"
+          type="button"
+          @click="showFilters = !showFilters"
+          :class="[
+            'inline-flex h-5 w-5 items-center justify-center rounded-md transition-colors duration-150',
+            showFilters
+              ? 'bg-[var(--surface)] text-[var(--text-primary)]'
+              : 'text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)]'
+          ]"
+          :title="showFilters ? 'Hide filters' : 'Show filters'"
+          aria-label="Toggle filters"
+        >
+          <SlidersHorizontal :size="12" :stroke-width="1.5" />
+        </button>
 
-          <!-- Theme Manager Button -->
-          <button
-            @click="handleThemeManagerClick"
-            class="p-3 mobile:p-1 rounded-lg bg-white/20 hover:bg-white/30 transition-all duration-200 border border-white/30 hover:border-white/50 backdrop-blur-sm shadow-lg hover:shadow-xl"
-            title="Open theme manager"
-          >
-            <span class="text-2xl mobile:text-base">🎨</span>
-          </button>
+        <!-- Filters popover (horizontal, dense) -->
+        <div
+          v-if="showFilters"
+          class="absolute right-0 top-full mt-1 min-w-[420px] max-w-[640px] rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg"
+          role="dialog"
+          aria-label="Filters"
+        >
+          <FilterPanel
+            :filters="filters"
+            :unique-app-names="uniqueAppNames"
+            :all-app-names="allAppNames"
+            @update:filters="filters = $event"
+            @select-agent="toggleAgentLane"
+          />
         </div>
       </div>
     </header>
-    
-    <!-- Filters -->
-    <FilterPanel
-      v-if="showFilters"
-      class="short:hidden"
-      :filters="filters"
-      @update:filters="filters = $event"
-    />
-    
+
     <!-- Live Pulse Chart -->
     <LivePulseChart
       :events="events"
@@ -81,7 +80,10 @@
     />
 
     <!-- Agent Swim Lane Container (below pulse chart, full width, hidden when empty) -->
-    <div v-if="selectedAgentLanes.length > 0" class="w-full bg-[var(--theme-bg-secondary)] px-3 py-4 mobile:px-2 mobile:py-2 overflow-hidden">
+    <div
+      v-if="selectedAgentLanes.length > 0"
+      class="w-full bg-[var(--background)] px-3 py-2 overflow-hidden"
+    >
       <AgentSwimLaneContainer
         :selected-agents="selectedAgentLanes"
         :events="events"
@@ -89,39 +91,29 @@
         @update:selected-agents="selectedAgentLanes = $event"
       />
     </div>
-    
+
     <!-- Timeline -->
     <div class="flex flex-col flex-1 overflow-hidden">
       <EventTimeline
         :events="events"
         :filters="filters"
-        :unique-app-names="uniqueAppNames"
-        :all-app-names="allAppNames"
         v-model:stick-to-bottom="stickToBottom"
-        @select-agent="toggleAgentLane"
       />
     </div>
-    
+
     <!-- Stick to bottom button -->
     <StickScrollButton
-      class="short:hidden"
       :stick-to-bottom="stickToBottom"
       @toggle="stickToBottom = !stickToBottom"
     />
-    
+
     <!-- Error message -->
     <div
       v-if="error"
-      class="fixed bottom-4 left-4 mobile:bottom-3 mobile:left-3 mobile:right-3 bg-red-100 border border-red-400 text-red-700 px-3 py-2 mobile:px-2 mobile:py-1.5 rounded mobile:text-xs"
+      class="fixed bottom-3 left-3 rounded-md border border-[var(--danger)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--danger)]"
     >
       {{ error }}
     </div>
-    
-    <!-- Theme Manager -->
-    <ThemeManager
-      :is-open="showThemeManager"
-      @close="showThemeManager = false"
-    />
 
     <!-- Toast Notifications -->
     <ToastNotification
@@ -136,25 +128,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { Circle, Trash2, SlidersHorizontal } from 'lucide-vue-next';
 import type { TimeRange } from './types';
 import { useWebSocket } from './composables/useWebSocket';
-import { useThemes } from './composables/useThemes';
 import { useEventColors } from './composables/useEventColors';
 import EventTimeline from './components/EventTimeline.vue';
 import FilterPanel from './components/FilterPanel.vue';
 import StickScrollButton from './components/StickScrollButton.vue';
 import LivePulseChart from './components/LivePulseChart.vue';
-import ThemeManager from './components/ThemeManager.vue';
 import ToastNotification from './components/ToastNotification.vue';
 import AgentSwimLaneContainer from './components/AgentSwimLaneContainer.vue';
 import { WS_URL } from './config';
 
 // WebSocket connection
 const { events, isConnected, error, clearEvents } = useWebSocket(WS_URL);
-
-// Theme management (sets up theme system)
-useThemes();
 
 // Event colors
 const { getHexColorForApp } = useEventColors();
@@ -168,8 +156,9 @@ const filters = ref({
 
 // UI state
 const stickToBottom = ref(true);
-const showThemeManager = ref(false);
 const showFilters = ref(false);
+const filtersTriggerRef = ref<HTMLButtonElement | null>(null);
+const filtersWrapperRef = ref<HTMLDivElement | null>(null);
 const uniqueAppNames = ref<string[]>([]); // Apps active in current time window
 const allAppNames = ref<string[]>([]); // All apps ever seen in session
 const selectedAgentLanes = ref<string[]>([]);
@@ -187,11 +176,9 @@ const seenAgents = new Set<string>();
 
 // Watch for new agents and show toast
 watch(uniqueAppNames, (newAppNames) => {
-  // Find agents that are new (not in seenAgents set)
   newAppNames.forEach(appName => {
     if (!seenAgents.has(appName)) {
       seenAgents.add(appName);
-      // Show toast for new agent
       const toast: Toast = {
         id: toastIdCounter++,
         agentName: appName,
@@ -213,12 +200,13 @@ const dismissToast = (id: number) => {
 const toggleAgentLane = (agentName: string) => {
   const index = selectedAgentLanes.value.indexOf(agentName);
   if (index >= 0) {
-    // Remove from comparison
     selectedAgentLanes.value.splice(index, 1);
   } else {
-    // Add to comparison
     selectedAgentLanes.value.push(agentName);
   }
+  // Selecting an agent is a terminal action for the popover — close it so
+  // the user can immediately see the swim lane that just appeared.
+  showFilters.value = false;
 };
 
 // Handle clear button click
@@ -227,9 +215,31 @@ const handleClearClick = () => {
   selectedAgentLanes.value = [];
 };
 
-// Debug handler for theme manager
-const handleThemeManagerClick = () => {
-  console.log('Theme manager button clicked!');
-  showThemeManager.value = true;
+// Filters popover: close on outside click + Escape. Without this, a stray
+// click anywhere on the dashboard pins the popover open until the chevron
+// is clicked again — a real annoyance on a 24/7 monitor.
+const handleDocumentMouseDown = (event: MouseEvent) => {
+  if (!showFilters.value) return;
+  const target = event.target as Node | null;
+  if (!target) return;
+  if (filtersWrapperRef.value && filtersWrapperRef.value.contains(target)) return;
+  showFilters.value = false;
 };
+
+const handleDocumentKeyDown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && showFilters.value) {
+    showFilters.value = false;
+    filtersTriggerRef.value?.focus();
+  }
+};
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleDocumentMouseDown);
+  document.addEventListener('keydown', handleDocumentKeyDown);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', handleDocumentMouseDown);
+  document.removeEventListener('keydown', handleDocumentKeyDown);
+});
 </script>

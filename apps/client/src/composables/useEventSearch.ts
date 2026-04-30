@@ -20,82 +20,72 @@ export function useEventSearch() {
     }
   };
 
-  // Extract searchable text from event
+  // Extract searchable text from event. The hook payload's tool input lives
+  // under `event.payload`, not as flat fields on the event — pluck out the
+  // common subkeys we want to grep over.
   const getSearchableText = (event: HookEvent): string => {
     const parts: string[] = [];
 
-    // Event type
-    if (event.hook_event_type) {
-      parts.push(event.hook_event_type);
-    }
+    if (event.hook_event_type) parts.push(event.hook_event_type);
+    if (event.source_app) parts.push(event.source_app);
+    if (event.session_id) parts.push(event.session_id);
+    if (event.model_name) parts.push(event.model_name);
+    if (event.summary) parts.push(event.summary);
+    if (event.subagent_type) parts.push(event.subagent_type);
+    if (event.description) parts.push(event.description);
 
-    // Source app and session
-    if (event.source_app) {
-      parts.push(event.source_app);
-    }
-    if (event.session_id) {
-      parts.push(event.session_id);
-    }
+    const payload = event.payload ?? {};
 
-    // Model name
-    if (event.model) {
-      parts.push(event.model);
-    }
+    if (typeof payload.tool_name === 'string') parts.push(payload.tool_name);
 
-    // Tool information
-    if (event.tool_name) {
-      parts.push(event.tool_name);
-    }
-    if (event.tool_command) {
-      parts.push(event.tool_command);
-    }
-    if (event.tool_file && event.tool_file.path) {
-      parts.push(event.tool_file.path);
-    }
+    const toolInput = payload.tool_input ?? {};
+    if (typeof toolInput.command === 'string') parts.push(toolInput.command);
+    if (typeof toolInput.file_path === 'string') parts.push(toolInput.file_path);
+    if (typeof toolInput.pattern === 'string') parts.push(toolInput.pattern);
+    if (typeof toolInput.url === 'string') parts.push(toolInput.url);
+    if (typeof toolInput.query === 'string') parts.push(toolInput.query);
+    if (typeof toolInput.prompt === 'string') parts.push(toolInput.prompt);
+    if (typeof toolInput.description === 'string') parts.push(toolInput.description);
+    if (typeof toolInput.subagent_type === 'string') parts.push(toolInput.subagent_type);
 
-    // Summary text
-    if (event.summary) {
-      parts.push(event.summary);
-    }
-
-    // HITL information
-    if (event.hitl_question) {
-      parts.push(event.hitl_question);
-    }
-    if (event.hitl_permission) {
-      parts.push(event.hitl_permission);
-    }
+    if (event.humanInTheLoop?.question) parts.push(event.humanInTheLoop.question);
 
     return parts.join(' ').toLowerCase();
   };
 
-  // Check if event matches pattern
+  // Check if event matches pattern. Slow path: compiles regex per call —
+  // intended for ad-hoc / single-event checks. Use `searchEvents` for any
+  // batched filtering so the regex is compiled exactly once.
   const matchesPattern = (event: HookEvent, pattern: string): boolean => {
     if (!pattern || pattern.trim() === '') {
       return true;
     }
 
-    const validation = validateRegex(pattern);
-    if (!validation.valid) {
-      return false;
-    }
-
+    let regex: RegExp;
     try {
-      const regex = new RegExp(pattern, 'i'); // Case-insensitive
-      const searchableText = getSearchableText(event);
-      return regex.test(searchableText);
+      regex = new RegExp(pattern, 'i');
     } catch {
       return false;
     }
+    return regex.test(getSearchableText(event));
   };
 
-  // Filter events by pattern
+  // Filter events by pattern. Compiles the regex once outside the hot loop;
+  // with 300 events and a non-empty pattern, the previous per-event compile
+  // burned an O(N) cost on every keystroke.
   const searchEvents = (events: HookEvent[], pattern: string): HookEvent[] => {
     if (!pattern || pattern.trim() === '') {
       return events;
     }
 
-    return events.filter(event => matchesPattern(event, pattern));
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, 'i');
+    } catch {
+      return events;
+    }
+
+    return events.filter(event => regex.test(getSearchableText(event)));
   };
 
   // Computed property for current error
